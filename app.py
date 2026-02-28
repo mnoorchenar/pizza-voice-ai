@@ -3,27 +3,9 @@ from huggingface_hub import InferenceClient
 import os, re, json, uuid
 from datetime import datetime
 
-app   = Flask(__name__)
-TOKEN = os.environ.get("HF_TOKEN", "")
+app = Flask(__name__)
 
-# ── LLM client ────────────────────────────────────────────────────────────────
-def get_client():
-    if not TOKEN:
-        return None
-    for model in [
-        "mistralai/Mistral-7B-Instruct-v0.3",
-        "HuggingFaceH4/zephyr-7b-beta",
-        "microsoft/Phi-3-mini-4k-instruct",
-    ]:
-        try:
-            return InferenceClient(model=model, token=TOKEN)
-        except Exception:
-            continue
-    return None
-
-CLIENT = get_client()
-
-# ── System prompt — Pino the waiter ───────────────────────────────────────────
+# ── System prompt ─────────────────────────────────────────────────────────────
 SYSTEM = """You are Pino, a warm and friendly Italian pizza waiter at PizzaVoice restaurant.
 Your job is to have a NATURAL conversation with the customer to take their pizza order.
 
@@ -49,11 +31,11 @@ RULES:
 - Do NOT output ##ORDER## until the customer explicitly confirms (yes/correct/place it/etc).
 - After outputting ##ORDER##, say a warm goodbye line."""
 
-# ── Fallback rule-based extractor (if no HF_TOKEN) ────────────────────────────
-SIZES_MAP    = {"personal":("Personal 6\"",7.99),"small":("Small 8\"",9.99),"medium":("Medium 12\"",13.99),"large":("Large 14\"",16.99),"extra large":("XL 16\"",19.99),"xl":("XL 16\"",19.99)}
-CRUSTS_MAP   = {"thin":("Thin Crust",0),"thick":("Thick Crust",0),"hand tossed":("Hand Tossed",0),"stuffed":("Stuffed Crust",2.50),"cauliflower":("Cauliflower Crust",3.00),"gluten free":("Gluten-Free",2.50),"gluten-free":("Gluten-Free",2.50)}
-SAUCES_MAP   = {"tomato":("Classic Tomato",0),"marinara":("Marinara",0),"bbq":("BBQ",0),"ranch":("Ranch",0),"buffalo":("Buffalo",0),"garlic butter":("Garlic Butter",0),"alfredo":("Alfredo",0.50),"pesto":("Basil Pesto",0.50)}
-CHEESES_MAP  = {"mozzarella":("Mozzarella",0),"cheddar":("Cheddar",0.50),"parmesan":("Parmesan",0.50),"feta":("Feta",1.00),"gouda":("Gouda",1.00),"ricotta":("Ricotta",0.75),"no cheese":("No Cheese",0),"vegan":("Vegan Cheese",1.50)}
+# ── Maps & pricing ────────────────────────────────────────────────────────────
+SIZES_MAP   = {"personal":("Personal 6\"",7.99),"small":("Small 8\"",9.99),"medium":("Medium 12\"",13.99),"large":("Large 14\"",16.99),"extra large":("XL 16\"",19.99),"xl":("XL 16\"",19.99)}
+CRUSTS_MAP  = {"thin":("Thin Crust",0),"thick":("Thick Crust",0),"hand tossed":("Hand Tossed",0),"stuffed":("Stuffed Crust",2.50),"cauliflower":("Cauliflower Crust",3.00),"gluten free":("Gluten-Free",2.50),"gluten-free":("Gluten-Free",2.50)}
+SAUCES_MAP  = {"tomato":("Classic Tomato",0),"marinara":("Marinara",0),"bbq":("BBQ",0),"ranch":("Ranch",0),"buffalo":("Buffalo",0),"garlic butter":("Garlic Butter",0),"alfredo":("Alfredo",0.50),"pesto":("Basil Pesto",0.50)}
+CHEESES_MAP = {"mozzarella":("Mozzarella",0),"cheddar":("Cheddar",0.50),"parmesan":("Parmesan",0.50),"feta":("Feta",1.00),"gouda":("Gouda",1.00),"ricotta":("Ricotta",0.75),"no cheese":("No Cheese",0),"vegan":("Vegan Cheese",1.50)}
 TOPPINGS_MAP = {
     "pepperoni":("Pepperoni","🍕",1.50),"mushrooms":("Mushrooms","🍄",1.00),"mushroom":("Mushrooms","🍄",1.00),
     "spinach":("Spinach","🥬",1.00),"jalapeños":("Jalapeños","🌶️",0.75),"jalapenos":("Jalapeños","🌶️",0.75),
@@ -68,13 +50,29 @@ TOPPINGS_MAP = {
     "artichoke":("Artichoke Hearts","🌱",1.50),"anchovies":("Anchovies","🐟",1.50),
     "avocado":("Avocado","🥑",1.50),"prosciutto":("Prosciutto","🍖",2.50),
     "truffle":("Truffle Oil","✨",3.00),"zucchini":("Zucchini","🥒",1.00),
-    "feta":("Feta Crumbles","🧀",1.25),"sun dried tomato":("Sun-Dried Tomatoes","☀️",1.25),
+    "sun dried tomato":("Sun-Dried Tomatoes","☀️",1.25),
 }
 TAX = 0.13
 
 
-def build_receipt(order_data: dict) -> dict:
-    """Turn raw LLM JSON into a full priced receipt."""
+# ── Get a fresh client every request (fixes secret loading timing) ────────────
+def get_client():
+    token = os.environ.get("HF_TOKEN", "").strip()  # ← read FRESH every time
+    if not token:
+        return None, "no_token"
+    for model in [
+        "mistralai/Mistral-7B-Instruct-v0.3",
+        "HuggingFaceH4/zephyr-7b-beta",
+        "microsoft/Phi-3-mini-4k-instruct",
+    ]:
+        try:
+            return InferenceClient(model=model, token=token), "ok"
+        except Exception:
+            continue
+    return None, "all_models_failed"
+
+
+def build_receipt(order_data):
     def pick(val, catalogue, default_key):
         if not val: return catalogue[default_key]
         v = val.lower().strip()
@@ -94,63 +92,56 @@ def build_receipt(order_data: dict) -> dict:
         raw_tops = [x.strip() for x in raw_tops.split(",")]
     seen, tops = set(), []
     for item in raw_tops:
-        item = item.lower().strip()
         for k in sorted(TOPPINGS_MAP, key=len, reverse=True):
-            if k in item:
+            if k in item.lower():
                 lbl, emoji, price = TOPPINGS_MAP[k]
                 if lbl not in seen:
                     seen.add(lbl)
-                    tops.append({"label": lbl, "emoji": emoji, "price": price})
+                    tops.append({"label":lbl,"emoji":emoji,"price":price})
                 break
 
     raw_ex = order_data.get("extras", [])
-    if isinstance(raw_ex, str):
-        raw_ex = [x.strip() for x in raw_ex.split(",")]
+    if isinstance(raw_ex, str): raw_ex = [x.strip() for x in raw_ex.split(",")]
     extras_out = []
     for item in raw_ex:
         il = item.lower()
         if "extra cheese" in il: extras_out.append({"label":"Extra Cheese","price":1.50})
         elif "extra sauce" in il: extras_out.append({"label":"Extra Sauce","price":0.50})
-        elif "well done" in il:   extras_out.append({"label":"Well Done","price":0.00})
+        elif "well done"   in il: extras_out.append({"label":"Well Done","price":0.00})
 
-    unit = size[1] + crust[1] + sauce[1] + cheese[1] + sum(t["price"] for t in tops) + sum(e["price"] for e in extras_out)
+    unit = size[1]+crust[1]+sauce[1]+cheese[1]+sum(t["price"] for t in tops)+sum(e["price"] for e in extras_out)
     sub  = unit * qty
     tax  = sub * TAX
     return {
-        "order": {
-            "name":     order_data.get("name", "Friend"),
-            "size":     {"label": size[0],   "price": size[1]},
-            "crust":    {"label": crust[0],  "price": crust[1]},
-            "sauce":    {"label": sauce[0],  "price": sauce[1]},
-            "cheese":   {"label": cheese[0], "price": cheese[1]},
-            "toppings": tops,
-            "extras":   extras_out,
-            "quantity": qty,
-        },
-        "pricing": {
-            "unit": round(unit,2), "quantity": qty,
-            "subtotal": round(sub,2), "tax": round(tax,2),
-            "total": round(sub+tax, 2),
-            "breakdown": {"base":round(size[1],2),"crust":round(crust[1],2),
-                          "sauce":round(sauce[1],2),"cheese":round(cheese[1],2),
-                          "toppings":round(sum(t["price"] for t in tops),2),
-                          "extras":round(sum(e["price"] for e in extras_out),2)},
-        },
-        "order_id":  str(uuid.uuid4())[:8].upper(),
-        "timestamp": datetime.now().strftime("%B %d, %Y  •  %I:%M %p"),
+        "order":{"name":order_data.get("name","Friend"),
+                 "size":{"label":size[0],"price":size[1]},
+                 "crust":{"label":crust[0],"price":crust[1]},
+                 "sauce":{"label":sauce[0],"price":sauce[1]},
+                 "cheese":{"label":cheese[0],"price":cheese[1]},
+                 "toppings":tops,"extras":extras_out,"quantity":qty},
+        "pricing":{"unit":round(unit,2),"quantity":qty,"subtotal":round(sub,2),
+                   "tax":round(tax,2),"total":round(sub+tax,2),
+                   "breakdown":{"base":round(size[1],2),"crust":round(crust[1],2),
+                                "sauce":round(sauce[1],2),"cheese":round(cheese[1],2),
+                                "toppings":round(sum(t["price"] for t in tops),2),
+                                "extras":round(sum(e["price"] for e in extras_out),2)}},
+        "order_id":str(uuid.uuid4())[:8].upper(),
+        "timestamp":datetime.now().strftime("%B %d, %Y  •  %I:%M %p"),
     }
 
 
-def chat_with_llm(history: list) -> str:
-    """Send full conversation to LLM and get Pino's reply."""
-    if not CLIENT:
-        return "I'm sorry, I need an HF_TOKEN to work properly! Please add it in Space Secrets. 🍕"
+def chat_with_llm(history):
+    client, status = get_client()   # ← fresh call every time
+    if not client:
+        if status == "no_token":
+            return "⚠️ HF_TOKEN secret is missing. Please add it in Space Settings → Secrets."
+        return "⚠️ Could not connect to any AI model. Please try again in a moment!"
     try:
-        messages = [{"role": "system", "content": SYSTEM}] + history
-        resp = CLIENT.chat_completion(messages=messages, max_tokens=300, temperature=0.7)
+        messages = [{"role":"system","content":SYSTEM}] + history
+        resp = client.chat_completion(messages=messages, max_tokens=300, temperature=0.7)
         return resp.choices[0].message.content.strip()
     except Exception as e:
-        return f"Oops, I had a little trouble there! Could you repeat that? 😅 ({str(e)[:60]})"
+        return f"Oops, I had a little trouble! Could you repeat that? 😅 (Error: {str(e)[:80]})"
 
 
 @app.route("/")
@@ -161,24 +152,27 @@ def index():
 @app.route("/chat", methods=["POST"])
 def chat():
     data    = request.get_json(force=True)
-    history = data.get("history", [])   # full [{role, content}] list from frontend
+    history = data.get("history", [])
     receipt = None
-
-    # Get LLM response
-    reply = chat_with_llm(history)
-
-    # Check if order is ready
+    reply   = chat_with_llm(history)
     m = re.search(r"##ORDER##(.*?)##END##", reply, re.DOTALL)
     if m:
         try:
-            order_json = json.loads(m.group(1).strip())
-            receipt    = build_receipt(order_json)
+            receipt = build_receipt(json.loads(m.group(1).strip()))
         except Exception:
             pass
-        # Clean the tag from the spoken reply
         reply = re.sub(r"##ORDER##.*?##END##", "", reply, flags=re.DOTALL).strip()
-
     return jsonify({"reply": reply, "receipt": receipt})
+
+
+# ── Quick debug route — visit /debug to verify token is loaded ────────────────
+@app.route("/debug")
+def debug():
+    token = os.environ.get("HF_TOKEN", "").strip()
+    return jsonify({
+        "token_found": bool(token),
+        "token_preview": (token[:6] + "…") if token else "MISSING"
+    })
 
 
 if __name__ == "__main__":
