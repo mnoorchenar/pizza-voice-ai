@@ -61,26 +61,21 @@
     #status-badge.speaking{display:block;background:rgba(244,162,97,.2);color:var(--orange)}
     @keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
 
-    /* ═══════ TOASTS ═══════ */
-    #toasts{
-      position:fixed;top:20px;right:20px;z-index:500;
-      display:flex;flex-direction:column;gap:10px;max-width:380px;
-    }
-    .toast{
+    /* ═══════ PINO MESSAGE ═══════ */
+    #pino-msg{
+      width:100%;max-width:480px;margin-top:12px;
       display:flex;gap:10px;align-items:flex-start;
-      background:rgba(255,255,255,.12);backdrop-filter:blur(20px);
-      border:1px solid rgba(255,255,255,.15);border-radius:16px;
-      padding:14px 18px;font-size:.9rem;line-height:1.5;color:rgba(255,255,255,.9);
-      animation:toastIn .35s ease;transition:opacity .3s,transform .3s;
+      background:rgba(244,162,97,.08);border:1px dashed rgba(244,162,97,.25);border-radius:12px;
+      padding:12px 16px;font-size:.85rem;line-height:1.55;color:rgba(255,255,255,.75);
+      min-height:44px;transition:opacity .3s;
     }
-    .toast.out{opacity:0;transform:translateX(20px)}
-    @keyframes toastIn{from{opacity:0;transform:translateX(30px)}}
-    .toast-avatar{font-size:1.2rem;flex-shrink:0}
-    .toast .speak-btn{
+    #pino-msg .avatar{font-size:1.1rem;flex-shrink:0}
+    #pino-msg .text{flex:1;font-style:italic}
+    #pino-msg .speak-btn{
       background:none;border:none;cursor:pointer;font-size:.8rem;
-      color:rgba(255,255,255,.4);flex-shrink:0;padding:2px;
+      color:rgba(255,255,255,.35);flex-shrink:0;padding:2px;
     }
-    .toast .speak-btn:hover{color:#fff}
+    #pino-msg .speak-btn:hover{color:#fff}
 
     /* ═══════ ORDER CARD ═══════ */
     .order-card{
@@ -220,8 +215,6 @@
 
 <!-- ══════════ APPLICATION ══════════ -->
 <div id="app">
-  <div id="toasts"></div>
-
   <!-- Live Order Card -->
   <div class="order-card" id="order-card">
     <div class="card-header">
@@ -257,6 +250,13 @@
     <div id="oid-area"></div>
   </div>
 
+  <!-- Pino's message (persistent, compact) -->
+  <div id="pino-msg">
+    <span class="avatar">👩‍🍳</span>
+    <span class="text" id="pino-text">Waiting for Pino…</span>
+    <button class="speak-btn" id="pino-replay" title="Replay">🔊</button>
+  </div>
+
   <!-- Voice Controls -->
   <div id="voice-area">
     <div id="silence-bar-wrap"><div id="silence-bar"></div></div>
@@ -276,7 +276,8 @@
 /* ━━━ DOM ━━━ */
 const $=id=>document.getElementById(id);
 const landing=$('landing'), appEl=$('app'), startBtn=$('start-btn');
-const toastsEl=$('toasts'), micBtn=$('mic-btn'), sendBtn=$('send-btn');
+const pinoTextEl=$('pino-text'), pinoReplayBtn=$('pino-replay');
+const micBtn=$('mic-btn'), sendBtn=$('send-btn');
 const inputEl=$('user-input'), transcriptEl=$('transcript');
 const modeBtnEl=$('mode-btn'), textBar=$('text-input-bar');
 const silenceWrap=$('silence-bar-wrap'), silenceBarEl=$('silence-bar');
@@ -310,20 +311,18 @@ startBtn.addEventListener('click',()=>{
   if(!appStarted){
     appStarted=true;
     const g="Ciao! Welcome to PizzaVoice! I'm Pino — what's your name?";
-    showToast(g);
+    setPinoMsg(g);
     setTimeout(()=>speakNatural(g),400);
   }
 });
 
-/* ━━━ TOASTS ━━━ */
-function showToast(text){
-  const el=document.createElement('div');el.className='toast';
-  el.innerHTML=`<span class="toast-avatar">👩‍🍳</span><span>${escHtml(text)}</span><button class="speak-btn" title="Replay">🔊</button>`;
-  el.querySelector('.speak-btn').addEventListener('click',()=>speakNatural(text));
-  toastsEl.appendChild(el);
-  setTimeout(()=>{el.classList.add('out');setTimeout(()=>el.remove(),400)},7000);
-  while(toastsEl.children.length>3)toastsEl.firstChild.remove();
+/* ━━━ PINO MESSAGE ━━━ */
+let lastPinoText='';
+function setPinoMsg(text){
+  lastPinoText=text;
+  pinoTextEl.innerHTML=escHtml(text);
 }
+pinoReplayBtn.addEventListener('click',()=>{if(lastPinoText)speakNatural(lastPinoText)});
 
 /* ━━━ ORDER CARD ━━━ */
 let prev={name:null,size:null,crust:null,sauce:null,cheese:null,toppings:[],drinks:[],extras:[],quantity:1,address:null};
@@ -469,7 +468,7 @@ if(SpeechRecognition){
     if(accumulated||interim)startSilenceTimer();
   };
   recognition.onerror=e=>{
-    if(e.error==='not-allowed'){stopRecording();showToast('⚠️ Mic denied. Tap ⌨️ for text mode.')}
+    if(e.error==='not-allowed'){stopRecording();setPinoMsg('⚠️ Mic denied. Tap ⌨️ for text mode.')}
     if(e.error==='aborted')stopRecording();
   };
   recognition.onend=()=>{if(isRecording)try{recognition.start()}catch(_){}};
@@ -490,7 +489,7 @@ function clearSilenceTimer(){if(silenceTimer){clearTimeout(silenceTimer);silence
 function hideSilenceBar(){silenceWrap.classList.remove('active');silenceBarEl.style.transition='none';silenceBarEl.style.width='0%'}
 
 function startRecording(){
-  if(!recognition){showToast('⚠️ Speech not supported — use text mode.');return}
+  if(!recognition){setPinoMsg('⚠️ Speech not supported — use text mode.');return}
   stopSpeaking();accumulated='';isRecording=true;
   micBtn.classList.add('recording');transcriptEl.textContent='Listening…';setStatus('listening');
   try{recognition.start()}catch(_){}
@@ -528,10 +527,10 @@ async function send(){
   try{
     const r=await fetch('/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({history})});
     const d=await r.json();
-    if(d.reply){showToast(d.reply);history.push({role:'assistant',content:d.reply});speakNatural(d.reply)}
+    if(d.reply){setPinoMsg(d.reply);history.push({role:'assistant',content:d.reply});speakNatural(d.reply)}
     if(d.partial)updateCard(d.partial);
     if(d.receipt)showReceipt(d.receipt);
-  }catch(e){showToast('⚠️ Connection error — try again.')}
+  }catch(e){setPinoMsg('⚠️ Connection error — try again.')}
   sendBtn.disabled=false;micBtn.disabled=false;
   if(!voiceMode)inputEl.focus();
 }
