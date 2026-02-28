@@ -72,12 +72,31 @@ BEHAVIOUR RULES:
 - NEVER output ##ORDER## before explicit confirmation
 - After outputting ##ORDER##, say a short warm farewell with a fancy Italian quote
 
-LIVE ORDER TRACKING:
-After EVERY reply (except the farewell after ##ORDER##), append on a new line at the very end:
-##UPDATE##{"name":null,"size":null,"crust":null,"sauce":null,"cheese":null,"toppings":[],"drinks":[],"extras":[],"quantity":1,"address":null}##END##
-Replace null with the confirmed lowercase value. Keep null for items not yet discussed.
-Toppings, drinks, extras arrays grow as items are confirmed.
-ALWAYS include this block — the customer sees a live order card built from it.
+LIVE ORDER TRACKING — CRITICAL (do this EVERY turn):
+You MUST end EVERY reply (except the farewell after ##ORDER##) with an ##UPDATE## block.
+The customer sees a LIVE order card built from this. Without it, the card stays blank!
+
+Format — always on a NEW LINE at the very end:
+##UPDATE##{"name":"...","size":"...","crust":"...","sauce":"...","cheese":"...","toppings":[...],"drinks":[...],"extras":[...],"quantity":1,"address":"..."}##END##
+
+Rules:
+- Include ALL fields every time, even unchanged ones
+- Use confirmed lowercase values; use null for items not yet decided
+- toppings/drinks/extras are arrays that grow as items are added
+
+Examples:
+
+After learning name is Lisa:
+Nice to meet you, Lisa! What size pizza?
+##UPDATE##{"name":"lisa","size":null,"crust":null,"sauce":null,"cheese":null,"toppings":[],"drinks":[],"extras":[],"quantity":1,"address":null}##END##
+
+After Lisa picks medium + thin crust:
+And which sauce?
+##UPDATE##{"name":"lisa","size":"medium","crust":"thin","sauce":null,"cheese":null,"toppings":[],"drinks":[],"extras":[],"quantity":1,"address":null}##END##
+
+After adding pepperoni and mushrooms:
+Anything else on top?
+##UPDATE##{"name":"lisa","size":"medium","crust":"thin","sauce":"marinara","cheese":"mozzarella","toppings":["pepperoni","mushrooms"],"drinks":[],"extras":[],"quantity":1,"address":null}##END##
 """
 
 # ── Catalogue maps ─────────────────────────────────────────────────────────────
@@ -294,6 +313,96 @@ def extract_update(text):
     return clean_text, None
 
 
+# ── Server-side fallback: infer partial order from conversation ────────────────
+def infer_partial(history):
+    """Lightweight keyword extraction as fallback when LLM skips ##UPDATE##."""
+    state = {"name": None, "size": None, "crust": None, "sauce": None,
+             "cheese": None, "toppings": [], "drinks": [], "extras": [],
+             "quantity": 1, "address": None}
+
+    for i, msg in enumerate(history):
+        if msg["role"] != "user":
+            continue
+        text = msg["content"].strip()
+        low = text.lower()
+
+        # Name: first user message if short and not a menu keyword
+        if i == 0 and not state["name"]:
+            cleaned = re.sub(r"^(my name is|i'm|i am|it's|this is|hey i'm|call me)\s+", "", low).strip()
+            words = cleaned.split()
+            menu_keys = set(SIZES_MAP) | set(CRUSTS_MAP) | set(SAUCES_MAP)
+            if len(words) <= 3 and not any(k in cleaned for k in menu_keys):
+                state["name"] = cleaned.title()
+                continue
+
+        # Size
+        for k in sorted(SIZES_MAP, key=len, reverse=True):
+            if re.search(r'\b' + re.escape(k) + r'\b', low):
+                state["size"] = k
+                break
+
+        # Crust
+        for k in sorted(CRUSTS_MAP, key=len, reverse=True):
+            if re.search(r'\b' + re.escape(k) + r'\b', low):
+                state["crust"] = k
+                break
+
+        # Sauce
+        for k in sorted(SAUCES_MAP, key=len, reverse=True):
+            if re.search(r'\b' + re.escape(k) + r'\b', low):
+                state["sauce"] = k
+                break
+
+        # Cheese
+        for k in sorted(CHEESES_MAP, key=len, reverse=True):
+            if re.search(r'\b' + re.escape(k) + r'\b', low):
+                state["cheese"] = k
+                break
+
+        # Toppings
+        seen_t = set(state["toppings"])
+        for k in sorted(TOPPINGS_MAP, key=len, reverse=True):
+            if re.search(r'\b' + re.escape(k) + r'\b', low) and k not in seen_t:
+                state["toppings"].append(k)
+                seen_t.add(k)
+
+        # Drinks
+        seen_d = set(state["drinks"])
+        for k in sorted(DRINKS_MAP, key=len, reverse=True):
+            if re.search(r'\b' + re.escape(k) + r'\b', low) and k not in seen_d:
+                state["drinks"].append(k)
+                seen_d.add(k)
+
+        # Quantity
+        qm = re.search(r'\b(\d+)\s*(pizza|pie)', low)
+        if qm:
+            state["quantity"] = int(qm.group(1))
+
+        # Address: if previous assistant message asked about address/delivery
+        if i > 0 and history[i-1].get("role") == "assistant":
+            prev_a = history[i-1]["content"].lower()
+            if ("address" in prev_a or "deliver" in prev_a) and len(text) > 5:
+                state["address"] = text
+
+    return state
+
+
+def merge_partial(llm_update, inferred):
+    """Merge LLM UPDATE data with inferred data, preferring LLM non-null values."""
+    if not llm_update and not inferred:
+        return None
+    base = inferred or {}
+    overlay = llm_update or {}
+    merged = {**base}
+    for k, v in overlay.items():
+        if k in ("toppings", "drinks", "extras"):
+            if v:  # non-empty list from LLM wins
+                merged[k] = v
+        elif v is not None:
+            merged[k] = v
+    return merged
+
+
 # ── Receipt builder ────────────────────────────────────────────────────────────
 def _pick(val, catalogue, default_key):
     if not val:
@@ -492,8 +601,11 @@ def chat():
     reply       = chat_with_llm(history)
     reply, order_data = extract_order(reply)
     reply, update_data = extract_update(reply)
-    receipt     = build_receipt(order_data) if order_data else None
-    return jsonify({"reply": reply, "partial": update_data, "receipt": receipt})
+    # Fallback: infer partial from conversation if LLM didn't include UPDATE
+    inferred = infer_partial(history)
+    partial  = merge_partial(update_data, inferred)
+    receipt  = build_receipt(order_data) if order_data else None
+    return jsonify({"reply": reply, "partial": partial, "receipt": receipt})
 
 
 if __name__ == "__main__":

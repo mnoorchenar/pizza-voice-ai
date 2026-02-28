@@ -313,6 +313,8 @@ startBtn.addEventListener('click',()=>{
     const g="Ciao! Welcome to PizzaVoice! I'm Pino — what's your name?";
     setPinoMsg(g);
     setTimeout(()=>speakNatural(g),400);
+    // Auto-start mic after greeting finishes (user gesture context still valid)
+    setTimeout(()=>{if(voiceMode && !isRecording)startRecording()},1800);
   }
 });
 
@@ -424,23 +426,32 @@ function loadVoices(){
 }
 speechSynthesis.addEventListener('voiceschanged',loadVoices);loadVoices();
 
+let orderDone=false;
+function resumeMic(){if(voiceMode&&!orderDone){accumulated='';isRecording=true;micBtn.classList.add('recording');transcriptEl.textContent='Listening…';setStatus('listening');try{recognition.start()}catch(_){}}}
+
 function browserSpeak(text){
   speechSynthesis.cancel();
   const c=text.replace(/[#*_~`>]/g,'').replace(/\bhttps?:\/\/\S+/g,'link');
   const u=new SpeechSynthesisUtterance(c);
   if(femaleVoice)u.voice=femaleVoice;u.rate=1.02;u.pitch=1.12;u.lang='en-US';
-  u.onstart=()=>setStatus('speaking');u.onend=()=>setStatus('idle');u.onerror=()=>setStatus('idle');
+  u.onstart=()=>setStatus('speaking');
+  u.onend=()=>{setStatus('idle');if(voiceMode&&!orderDone)resumeMic()};
+  u.onerror=()=>{setStatus('idle');if(voiceMode&&!orderDone)resumeMic()};
   speechSynthesis.speak(u);
 }
 async function speakNatural(text){
-  if(!voiceMode)return;stopSpeaking();setStatus('speaking');
+  if(!voiceMode)return;
+  // Pause mic while speaking so it doesn't hear itself
+  const wasMicOn=isRecording;
+  if(wasMicOn){isRecording=false;try{recognition.stop()}catch(_){}}
+  stopSpeaking();setStatus('speaking');
   try{
     const r=await fetch('/tts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});
     if(!r.ok)throw new Error(r.status);
     const blob=await r.blob();if(blob.size<100)throw new Error('empty');
     const url=URL.createObjectURL(blob);
     currentAudio=new Audio(url);
-    currentAudio.onended=()=>{setStatus('idle');URL.revokeObjectURL(url);currentAudio=null};
+    currentAudio.onended=()=>{setStatus('idle');URL.revokeObjectURL(url);currentAudio=null;if(wasMicOn&&voiceMode&&!orderDone)resumeMic()};
     currentAudio.onerror=()=>{setStatus('idle');URL.revokeObjectURL(url);currentAudio=null;browserSpeak(text)};
     currentAudio.play();
   }catch(e){console.warn('[TTS] fallback:',e);browserSpeak(text)}
@@ -481,7 +492,13 @@ function startSilenceTimer(){
   silenceBarEl.offsetWidth;
   silenceBarEl.style.transition=`width ${SILENCE_MS}ms linear`;silenceBarEl.style.width='100%';
   silenceTimer=setTimeout(()=>{
-    if(accumulated.trim()){inputEl.value=accumulated.trim();accumulated='';stopRecording();send()}
+    if(accumulated.trim()){
+      inputEl.value=accumulated.trim();accumulated='';
+      // Temporarily stop recognition to send (will resume after TTS)
+      isRecording=false;try{recognition.stop()}catch(_){}
+      micBtn.classList.remove('recording');setStatus('idle');
+      send();
+    }
     hideSilenceBar();
   },SILENCE_MS);
 }
@@ -529,10 +546,11 @@ async function send(){
     const d=await r.json();
     if(d.reply){setPinoMsg(d.reply);history.push({role:'assistant',content:d.reply});speakNatural(d.reply)}
     if(d.partial)updateCard(d.partial);
-    if(d.receipt)showReceipt(d.receipt);
+    if(d.receipt){orderDone=true;showReceipt(d.receipt)}
   }catch(e){setPinoMsg('⚠️ Connection error — try again.')}
   sendBtn.disabled=false;micBtn.disabled=false;
   if(!voiceMode)inputEl.focus();
+  // Mic will auto-resume after TTS finishes (see speakNatural/browserSpeak callbacks)
 }
 sendBtn.addEventListener('click',send);
 inputEl.addEventListener('keydown',e=>{if(e.key==='Enter')send()});
