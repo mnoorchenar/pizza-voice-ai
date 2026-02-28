@@ -104,7 +104,7 @@ MODELS = [
     ("HuggingFaceH4/zephyr-7b-beta",            True),
     ("microsoft/Phi-3.5-mini-instruct",         True),
     ("google/gemma-2-2b-it",                    True),
-    ("meta-llama/Llama-3.2-1B-Instruct",        True),
+    ("meta-llama/Llama-3.1-8B-Instruct",        True),
 ]
 
 
