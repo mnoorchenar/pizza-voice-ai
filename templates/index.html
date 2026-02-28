@@ -294,6 +294,10 @@
       ? o.toppings.map(t=>`<span class="topping-chip">${t.emoji} ${t.label} <em style="color:#999">${fmt(t.price)}</em></span>`).join("")
       : `<span style="color:#bbb;font-size:.85rem">None</span>`;
 
+    let drinksHtml = (o.drinks && o.drinks.length)
+      ? o.drinks.map(d=>`<span class="topping-chip">${d.emoji} ${d.label} <em style="color:#999">${fmt(d.price)}</em></span>`).join("")
+      : `<span style="color:#bbb;font-size:.85rem">None</span>`;
+
     let extrasHtml = o.extras.length
       ? o.extras.map(e=>`<div class="receipt-row"><span>${e.label}</span><span>${e.price?fmt(e.price):"free"}</span></div>`).join("")
       : "";
@@ -319,7 +323,17 @@
         <div>${topsHtml}</div>
       </div>
 
+      <div class="receipt-section">
+        <h3>🥤 Drinks</h3>
+        <div>${drinksHtml}</div>
+      </div>
+
       ${extrasHtml ? `<div class="receipt-section"><h3>Extras</h3>${extrasHtml}</div>` : ""}
+
+      <div class="receipt-section">
+        <h3>📍 Delivery Address</h3>
+        <p style="font-size:.9rem;color:var(--mid);line-height:1.5">${escHtml(o.address || 'Pick-up')}</p>
+      </div>
 
       <div class="receipt-section">
         <h3>Pricing</h3>
@@ -328,11 +342,16 @@
         ${p.breakdown.sauce   ? `<div class="receipt-row"><span>Sauce upgrade</span><span>+${fmt(p.breakdown.sauce)}</span></div>` : ""}
         ${p.breakdown.cheese  ? `<div class="receipt-row"><span>Cheese upgrade</span><span>+${fmt(p.breakdown.cheese)}</span></div>` : ""}
         ${p.breakdown.toppings? `<div class="receipt-row"><span>Toppings</span><span>+${fmt(p.breakdown.toppings)}</span></div>` : ""}
+        ${p.breakdown.drinks  ? `<div class="receipt-row"><span>Drinks</span><span>+${fmt(p.breakdown.drinks)}</span></div>` : ""}
         ${p.breakdown.extras  ? `<div class="receipt-row"><span>Extras</span><span>+${fmt(p.breakdown.extras)}</span></div>` : ""}
         ${p.quantity > 1      ? `<div class="receipt-row"><span>Unit price × ${p.quantity}</span><span>${fmt(p.unit)} × ${p.quantity}</span></div>` : ""}
         <div class="receipt-row"><span>Subtotal</span><span>${fmt(p.subtotal)}</span></div>
         <div class="receipt-row tax"><span>Tax (13%)</span><span>${fmt(p.tax)}</span></div>
-        <div class="receipt-row total"><span>Total</span><span>${fmt(p.total)}</span></div>
+        <div class="receipt-row total"><span>💰 Total Due</span><span style="color:var(--red);font-size:1.15rem">${fmt(p.total)}</span></div>
+      </div>
+
+      <div style="text-align:center;margin:16px 0 8px;padding:12px 10px;background:linear-gradient(135deg,#fff8f0,#fff3e0);border-radius:12px;border:1px dashed var(--orange)">
+        <p style="font-style:italic;font-size:.88rem;color:var(--mid);line-height:1.6">${escHtml(r.quote || '')}</p>
       </div>
 
       <div class="order-id">Order #${r.order_id}</div>

@@ -17,8 +17,11 @@ YOUR PERSONALITY:
 
 YOUR GOAL:
 Guide the customer through a NATURAL conversation to build their pizza order.
-Collect: customer name, size, crust, sauce, cheese, toppings (or none), quantity.
+Collect: customer name, size, crust, sauce, cheese, toppings (or none), drinks (or none),
+         quantity, and DELIVERY ADDRESS.
 Do NOT ask all questions at once. Ask ONE thing at a time, like a real waiter would.
+After pizza details are done, ask if they'd like any drinks.
+Finally, ask for the delivery address before confirming.
 
 MENU:
   Sizes:   Personal 6" $7.99 | Small 8" $9.99 | Medium 12" $13.99 | Large 14" $16.99 | XL 16" $19.99
@@ -32,19 +35,29 @@ MENU:
              Fresh Basil, Roasted Garlic, Arugula, Broccoli, Sweet Corn, Artichoke Hearts,
              Avocado, Zucchini, Sun-Dried Tomatoes, Pineapple
     Premium: Truffle Oil +$3.00
+  Drinks:
+    Soft Drinks: Cola $2.49 | Diet Cola $2.49 | Sprite $2.49 | Fanta $2.49 | Root Beer $2.49
+    Juice:       Orange Juice $2.99 | Apple Juice $2.99 | Lemonade $2.99
+    Water:       Still Water $1.49 | Sparkling Water $1.99
+    Italian:     Espresso $3.49 | Cappuccino $4.49 | Italian Soda $3.99 | Limonata $3.99
+    Beer/Wine:   Craft Beer $5.99 | House Red Wine $6.99 | House White Wine $6.99 | Prosecco $7.99
   Extras:  Extra Cheese +$1.50 | Extra Sauce +$0.50 | Well Done / Light Sauce (free)
 
 BEHAVIOUR RULES:
 - Make smart recommendations when asked (vegetarian → pesto base, feta, spinach, mushrooms, etc.)
 - Handle vague requests gracefully ("make it spicy" → suggest jalapeños + buffalo sauce)
 - If someone wants half-and-half toppings, note it in extras as "Half [A] / Half [B]"
-- When ALL info is collected AND the customer explicitly confirms
+- Always offer drinks after the pizza is customised — suggest pairings!
+- Always ask for a delivery address before confirming the order
+- When ALL info is collected (including address) AND the customer explicitly confirms
   (words like "yes", "perfect", "place it", "go ahead", "that's right", "sounds good"),
   output EXACTLY this block on its own line — no extra text on that line:
-  ##ORDER##{"name":"...","size":"...","crust":"...","sauce":"...","cheese":"...","toppings":["..."],"extras":["..."],"quantity":1}##END##
+  ##ORDER##{"name":"...","size":"...","crust":"...","sauce":"...","cheese":"...","toppings":["..."],"drinks":["..."],"extras":["..."],"quantity":1,"address":"..."}##END##
 - All values inside the JSON must be lowercase and match the menu items as closely as possible
+- The "drinks" array should list each drink ordered (can be empty [])
+- The "address" must be the full delivery address the customer provided
 - NEVER output ##ORDER## before explicit confirmation
-- After outputting ##ORDER##, say a short warm farewell
+- After outputting ##ORDER##, say a short warm farewell with a fancy Italian quote
 """
 
 # ── Catalogue maps ─────────────────────────────────────────────────────────────
@@ -94,7 +107,43 @@ TOPPINGS_MAP = {
     "sun-dried tomatoes": ("Sun-Dried Tomatoes", "☀️", 1.25),
     "sun dried tomato": ("Sun-Dried Tomatoes", "☀️", 1.25),
 }
+DRINKS_MAP = {
+    "cola":            ("Cola",            "🥤", 2.49),
+    "diet cola":       ("Diet Cola",       "🥤", 2.49),
+    "sprite":          ("Sprite",          "🥤", 2.49),
+    "fanta":           ("Fanta",           "🥤", 2.49),
+    "root beer":       ("Root Beer",       "🍺", 2.49),
+    "orange juice":    ("Orange Juice",    "🍊", 2.99),
+    "apple juice":     ("Apple Juice",     "🍏", 2.99),
+    "lemonade":        ("Lemonade",        "🍋", 2.99),
+    "still water":     ("Still Water",     "💧", 1.49),
+    "water":           ("Still Water",     "💧", 1.49),
+    "sparkling water": ("Sparkling Water", "✨", 1.99),
+    "sparkling":       ("Sparkling Water", "✨", 1.99),
+    "espresso":        ("Espresso",        "☕", 3.49),
+    "cappuccino":      ("Cappuccino",      "☕", 4.49),
+    "italian soda":    ("Italian Soda",    "🧊", 3.99),
+    "limonata":        ("Limonata",        "🍋", 3.99),
+    "craft beer":      ("Craft Beer",      "🍺", 5.99),
+    "beer":            ("Craft Beer",      "🍺", 5.99),
+    "red wine":        ("House Red Wine",  "🍷", 6.99),
+    "white wine":      ("House White Wine","🥂", 6.99),
+    "prosecco":        ("Prosecco",        "🥂", 7.99),
+}
 TAX_RATE = 0.13
+
+# ── Fancy quotes for the receipt ───────────────────────────────────────────────
+import random
+FANCY_QUOTES = [
+    "\"In pizza we trust.\" — Every Italian ever 🍕",
+    "\"Life is too short for bad pizza.\" — Pino 🇮🇹",
+    "\"You can't make everyone happy. You're not pizza.\" — Unknown 😄",
+    "\"A slice a day keeps the sadness away.\" — Ancient Proverb 🧡",
+    "\"La vita è bella… especially with pizza!\" — PizzaVoice 💫",
+    "\"Pizza is a lot like love — when it's good, it's really good.\" — Chef Pino 🍷",
+    "\"Eat pizza. Be happy. Repeat.\" — The Italian Way 🌟",
+    "\"There's no 'we' in pizza… wait, yes there is. Share the love!\" — Pino 🤌",
+]
 
 # ── Models: (model_id, supports_chat_completion) ───────────────────────────────
 # Ordered by reliability on HF Serverless Inference API (free tier)
@@ -232,6 +281,23 @@ def build_receipt(order_data):
                     tops.append({"label": lbl, "emoji": emoji, "price": price})
                 break
 
+    # ── Drinks ──
+    raw_drinks = order_data.get("drinks", [])
+    if isinstance(raw_drinks, str):
+        raw_drinks = [x.strip() for x in raw_drinks.split(",")]
+    seen_drinks, drinks_out = set(), []
+    for item in raw_drinks:
+        il = item.lower().strip()
+        if not il or il == "none":
+            continue
+        for k in sorted(DRINKS_MAP, key=len, reverse=True):
+            if k in il or il in k:
+                lbl, emoji, price = DRINKS_MAP[k]
+                if lbl not in seen_drinks:
+                    seen_drinks.add(lbl)
+                    drinks_out.append({"label": lbl, "emoji": emoji, "price": price})
+                break
+
     raw_ex = order_data.get("extras", [])
     if isinstance(raw_ex, str):
         raw_ex = [x.strip() for x in raw_ex.split(",")]
@@ -249,10 +315,15 @@ def build_receipt(order_data):
         elif item.strip():
             extras_out.append({"label": item.strip().title(), "price": 0.00})
 
-    unit = (size[1] + crust[1] + sauce[1] + cheese[1]
-            + sum(t["price"] for t in tops)
-            + sum(e["price"] for e in extras_out))
-    sub  = unit * qty
+    # ── Address ──
+    address = order_data.get("address", "").strip() or "Pick-up"
+
+    pizza_unit = (size[1] + crust[1] + sauce[1] + cheese[1]
+                  + sum(t["price"] for t in tops)
+                  + sum(e["price"] for e in extras_out))
+    pizza_sub   = pizza_unit * qty
+    drinks_total = sum(d["price"] for d in drinks_out)
+    sub  = pizza_sub + drinks_total
     tax  = sub * TAX_RATE
 
     return {
@@ -263,11 +334,13 @@ def build_receipt(order_data):
             "sauce":    {"label": sauce[0],  "price": sauce[1]},
             "cheese":   {"label": cheese[0], "price": cheese[1]},
             "toppings": tops,
+            "drinks":   drinks_out,
             "extras":   extras_out,
             "quantity": qty,
+            "address":  address,
         },
         "pricing": {
-            "unit":     round(unit, 2),
+            "unit":     round(pizza_unit, 2),
             "quantity": qty,
             "subtotal": round(sub,  2),
             "tax":      round(tax,  2),
@@ -278,9 +351,11 @@ def build_receipt(order_data):
                 "sauce":    round(sauce[1], 2),
                 "cheese":   round(cheese[1], 2),
                 "toppings": round(sum(t["price"] for t in tops),      2),
+                "drinks":   round(drinks_total, 2),
                 "extras":   round(sum(e["price"] for e in extras_out), 2),
             },
         },
+        "quote":     random.choice(FANCY_QUOTES),
         "order_id":  str(uuid.uuid4())[:8].upper(),
         "timestamp": datetime.now().strftime("%B %d, %Y  •  %I:%M %p"),
     }
