@@ -98,13 +98,15 @@ TAX_RATE = 0.13
 
 # ── Models: (model_id, supports_chat_completion) ───────────────────────────────
 # Ordered by reliability on HF Serverless Inference API (free tier)
+# Updated Feb 2026 — old models returned 410 Gone on the legacy endpoint.
+# huggingface_hub >= 0.31 auto-routes via Inference Providers.
 MODELS = [
-    ("Qwen/Qwen2.5-7B-Instruct",               True),
-    ("mistralai/Mistral-7B-Instruct-v0.3",      True),
-    ("HuggingFaceH4/zephyr-7b-beta",            True),
-    ("microsoft/Phi-3.5-mini-instruct",         True),
-    ("google/gemma-2-2b-it",                    True),
-    ("meta-llama/Llama-3.1-8B-Instruct",        True),
+    ("Qwen/Qwen2.5-72B-Instruct",                True),
+    ("meta-llama/Llama-3.3-70B-Instruct",        True),
+    ("mistralai/Mistral-Small-24B-Instruct-2501", True),
+    ("microsoft/Phi-4",                           True),
+    ("Qwen/Qwen2.5-Coder-32B-Instruct",          True),
+    ("google/gemma-2-27b-it",                     True),
 ]
 
 
