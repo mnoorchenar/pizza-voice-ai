@@ -7,692 +7,536 @@
   <link rel="preconnect" href="https://fonts.googleapis.com"/>
   <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
   <style>
-    :root {
-      --red:    #e63946;
-      --red-dk: #c1121f;
-      --orange: #f4a261;
-      --cream:  #fdf8f0;
-      --dark:   #1d1d1d;
-      --mid:    #444;
-      --light:  #f1f1f1;
-      --radius: 16px;
-    }
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
-      background: var(--cream);
-      color: var(--dark);
-      height: 100vh;
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
+    :root{--red:#e63946;--red-dk:#c1121f;--orange:#f4a261;--dark:#1a1a2e;--glass:rgba(255,255,255,.07);--border:rgba(255,255,255,.10);--muted:rgba(255,255,255,.40)}
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{
+      font-family:'Inter','Segoe UI',system-ui,sans-serif;
+      background:linear-gradient(160deg,#1a1a2e 0%,#16213e 35%,#0f3460 70%,#e63946 100%);
+      background-attachment:fixed;
+      color:#fff;min-height:100vh;overflow-x:hidden;
     }
 
-    /* ══════════════════════════════════════════════════════════════════════
-       LANDING OVERLAY
-       ══════════════════════════════════════════════════════════════════════ */
-    #landing {
-      position: fixed; inset: 0; z-index: 1000;
-      display: flex; flex-direction: column;
-      align-items: center; justify-content: center;
-      background: linear-gradient(160deg, #1a1a2e 0%, #16213e 35%, #0f3460 70%, #e63946 100%);
-      color: #fff;
-      text-align: center;
-      transition: opacity .6s ease, transform .6s ease;
+    /* ═══════ LANDING ═══════ */
+    #landing{
+      position:fixed;inset:0;z-index:1000;
+      display:flex;flex-direction:column;align-items:center;justify-content:center;
+      background:linear-gradient(160deg,#1a1a2e 0%,#16213e 35%,#0f3460 70%,#e63946 100%);
+      color:#fff;text-align:center;
+      transition:opacity .6s ease,transform .6s ease;
     }
-    #landing.hidden { opacity: 0; pointer-events: none; transform: scale(1.05); }
-    .landing-pizza {
-      font-size: 5rem;
-      animation: float 3s ease-in-out infinite;
-      filter: drop-shadow(0 8px 24px rgba(230,57,70,.4));
+    #landing.hidden{opacity:0;pointer-events:none;transform:scale(1.05)}
+    .landing-pizza{font-size:5rem;animation:float 3s ease-in-out infinite;filter:drop-shadow(0 8px 24px rgba(230,57,70,.4))}
+    @keyframes float{0%,100%{transform:translateY(0) rotate(0deg)}50%{transform:translateY(-14px) rotate(3deg)}}
+    .landing-title{
+      font-family:'Playfair Display',serif;font-size:3.2rem;margin:20px 0 8px;letter-spacing:-1px;
+      background:linear-gradient(135deg,#fff 30%,var(--orange));
+      background-clip:text;-webkit-background-clip:text;-webkit-text-fill-color:transparent;
     }
-    @keyframes float {
-      0%,100% { transform: translateY(0) rotate(0deg); }
-      50%     { transform: translateY(-14px) rotate(3deg); }
+    .landing-sub{font-size:1.1rem;color:rgba(255,255,255,.7);max-width:400px;line-height:1.6;margin-bottom:32px}
+    .landing-features{display:flex;gap:28px;margin-bottom:40px;flex-wrap:wrap;justify-content:center}
+    .landing-feat{display:flex;flex-direction:column;align-items:center;gap:6px;font-size:.85rem;color:rgba(255,255,255,.65)}
+    .landing-feat .icon{font-size:1.6rem}
+    #start-btn{
+      padding:16px 48px;border:none;border-radius:50px;background:var(--red);color:#fff;
+      font-size:1.15rem;font-weight:700;font-family:'Inter',sans-serif;cursor:pointer;
+      transition:background .2s,transform .15s,box-shadow .3s;
+      box-shadow:0 6px 30px rgba(230,57,70,.45);letter-spacing:.5px;
     }
-    .landing-title {
-      font-family: 'Playfair Display', serif;
-      font-size: 3.2rem;
-      margin: 20px 0 8px;
-      letter-spacing: -1px;
-      background: linear-gradient(135deg, #fff 30%, var(--orange));
-      background-clip: text;
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
+    #start-btn:hover{background:var(--red-dk);transform:translateY(-2px);box-shadow:0 10px 40px rgba(230,57,70,.55)}
+    #start-btn:active{transform:scale(.97)}
+    .landing-footer{position:absolute;bottom:24px;font-size:.72rem;color:rgba(255,255,255,.3)}
+
+    /* ═══════ APP ═══════ */
+    #app{display:none;flex-direction:column;align-items:center;padding:24px 16px 160px;min-height:100vh}
+    #app.visible{display:flex}
+
+    /* ═══════ STATUS BADGE ═══════ */
+    #status-badge{
+      position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:200;
+      font-size:.75rem;padding:5px 14px;border-radius:20px;
+      background:rgba(255,255,255,.1);color:rgba(255,255,255,.5);display:none;
+      backdrop-filter:blur(10px);
     }
-    .landing-sub {
-      font-size: 1.1rem;
-      color: rgba(255,255,255,.7);
-      max-width: 400px;
-      line-height: 1.6;
-      margin-bottom: 32px;
+    #status-badge.listening{display:block;background:rgba(74,222,128,.2);color:#4ade80;animation:pulse 1.5s infinite}
+    #status-badge.speaking{display:block;background:rgba(244,162,97,.2);color:var(--orange)}
+    @keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+
+    /* ═══════ TOASTS ═══════ */
+    #toasts{
+      position:fixed;top:20px;right:20px;z-index:500;
+      display:flex;flex-direction:column;gap:10px;max-width:380px;
     }
-    .landing-features {
-      display: flex; gap: 28px;
-      margin-bottom: 40px;
-      flex-wrap: wrap;
-      justify-content: center;
+    .toast{
+      display:flex;gap:10px;align-items:flex-start;
+      background:rgba(255,255,255,.12);backdrop-filter:blur(20px);
+      border:1px solid rgba(255,255,255,.15);border-radius:16px;
+      padding:14px 18px;font-size:.9rem;line-height:1.5;color:rgba(255,255,255,.9);
+      animation:toastIn .35s ease;transition:opacity .3s,transform .3s;
     }
-    .landing-feat {
-      display: flex; flex-direction: column;
-      align-items: center; gap: 6px;
-      font-size: .85rem;
-      color: rgba(255,255,255,.65);
+    .toast.out{opacity:0;transform:translateX(20px)}
+    @keyframes toastIn{from{opacity:0;transform:translateX(30px)}}
+    .toast-avatar{font-size:1.2rem;flex-shrink:0}
+    .toast .speak-btn{
+      background:none;border:none;cursor:pointer;font-size:.8rem;
+      color:rgba(255,255,255,.4);flex-shrink:0;padding:2px;
     }
-    .landing-feat .icon { font-size: 1.6rem; }
-    #start-btn {
-      padding: 16px 48px;
-      border: none; border-radius: 50px;
-      background: var(--red);
-      color: #fff;
-      font-size: 1.15rem;
-      font-weight: 700;
-      font-family: 'Inter', sans-serif;
-      cursor: pointer;
-      transition: background .2s, transform .15s, box-shadow .3s;
-      box-shadow: 0 6px 30px rgba(230,57,70,.45);
-      letter-spacing: .5px;
+    .toast .speak-btn:hover{color:#fff}
+
+    /* ═══════ ORDER CARD ═══════ */
+    .order-card{
+      width:100%;max-width:480px;
+      background:var(--glass);backdrop-filter:blur(24px);
+      border:1px solid var(--border);border-radius:24px;
+      padding:32px 28px;margin-top:10px;
+      transition:border-color .4s,background .4s;
     }
-    #start-btn:hover { background: var(--red-dk); transform: translateY(-2px); box-shadow: 0 10px 40px rgba(230,57,70,.55); }
-    #start-btn:active { transform: scale(.97); }
-    .landing-footer {
-      position: absolute; bottom: 24px;
-      font-size: .72rem;
-      color: rgba(255,255,255,.3);
+    .card-header{text-align:center;margin-bottom:24px}
+    .card-header h2{font-family:'Playfair Display',serif;font-size:1.6rem;margin-bottom:4px}
+    .card-header p{font-size:.82rem;color:var(--muted)}
+
+    .order-row{
+      display:flex;align-items:center;padding:10px 0;
+      border-bottom:1px solid rgba(255,255,255,.06);gap:12px;
+    }
+    .order-row:last-of-type{border-bottom:none}
+    .row-icon{font-size:1.1rem;width:28px;text-align:center;flex-shrink:0}
+    .row-label{font-size:.8rem;color:var(--muted);width:68px;flex-shrink:0}
+    .row-value{flex:1;font-size:.95rem;font-weight:500;min-height:22px}
+    .row-price{font-size:.82rem;color:var(--muted);text-align:right;min-width:60px;flex-shrink:0}
+
+    .row-value.waiting{color:rgba(255,255,255,.18)}
+    .row-value.waiting::after{content:"· · ·";animation:dots 1.5s infinite}
+    @keyframes dots{0%,100%{opacity:.3}50%{opacity:1}}
+    .row-value.filled{animation:fillPop .35s ease}
+    @keyframes fillPop{0%{opacity:0;transform:translateX(-8px)}60%{transform:translateX(3px)}100%{opacity:1;transform:translateX(0)}}
+
+    .chips-area{display:flex;flex-wrap:wrap;gap:6px;flex:1;min-height:24px}
+    .chip{
+      display:inline-flex;align-items:center;gap:4px;
+      background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.12);
+      padding:4px 12px;border-radius:20px;font-size:.8rem;
+      animation:chipIn .3s ease;
+    }
+    @keyframes chipIn{from{opacity:0;transform:scale(.7)}}
+    .chip .cp{color:rgba(255,255,255,.4);font-size:.72rem}
+    .chips-area.waiting::after{content:"· · ·";color:rgba(255,255,255,.18);animation:dots 1.5s infinite}
+
+    .pricing-section{margin-top:20px;padding-top:16px;border-top:1px dashed rgba(255,255,255,.15)}
+    .price-row{display:flex;justify-content:space-between;font-size:.88rem;padding:4px 0;color:rgba(255,255,255,.55)}
+    .price-row.total{
+      font-size:1.15rem;font-weight:700;color:var(--orange);
+      border-top:1px solid rgba(255,255,255,.15);padding-top:10px;margin-top:6px;
     }
 
-    /* ══════════════════════════════════════════════════════════════════════
-       HEADER
-       ══════════════════════════════════════════════════════════════════════ */
-    header {
-      background: var(--red);
-      color: #fff;
-      padding: 14px 24px;
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      box-shadow: 0 2px 8px rgba(0,0,0,.2);
+    /* Confirmed state */
+    .order-card.confirmed{border-color:rgba(74,222,128,.25);background:rgba(74,222,128,.05)}
+    .order-card.confirmed .card-header h2{color:#4ade80}
+    .quote-box{
+      text-align:center;margin-top:16px;padding:14px;
+      background:rgba(244,162,97,.1);border:1px dashed rgba(244,162,97,.3);border-radius:12px;
+      font-style:italic;font-size:.85rem;color:rgba(255,255,255,.65);line-height:1.6;
     }
-    header h1 { font-size: 1.4rem; font-weight: 700; }
-    header span.logo { font-size: 1.8rem; }
-    .status-dot {
-      width: 10px; height: 10px;
-      background: #4ade80;
-      border-radius: 50%;
-      animation: pulse 2s infinite;
-    }
-    @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.4; } }
-    .header-right {
-      margin-left: auto;
-      display: flex;
-      align-items: center;
-      gap: 12px;
-    }
-    #mode-toggle {
-      display: flex; align-items: center; gap: 6px;
-      background: rgba(255,255,255,.18);
-      border: 1.5px solid rgba(255,255,255,.35);
-      border-radius: 24px;
-      padding: 5px 14px;
-      color: #fff; font-size: .82rem; font-weight: 600;
-      cursor: pointer;
-      transition: background .2s, border-color .2s;
-      user-select: none;
-    }
-    #mode-toggle:hover { background: rgba(255,255,255,.28); }
-    #mode-toggle .icon { font-size: 1.05rem; }
-    #mode-toggle.voice-active { background: rgba(255,255,255,.32); border-color: #fff; }
-    #voice-status {
-      font-size: .72rem; padding: 3px 10px; border-radius: 12px;
-      background: rgba(255,255,255,.15); color: rgba(255,255,255,.7);
-      display: none;
-    }
-    #voice-status.listening { display:inline-block; background:rgba(74,222,128,.25); color:#4ade80; animation:pulse 1.5s infinite; }
-    #voice-status.speaking  { display:inline-block; background:rgba(244,162,97,.25); color:var(--orange); }
+    .order-id-text{text-align:center;margin-top:12px;font-size:.72rem;color:rgba(255,255,255,.25);letter-spacing:.06em}
 
-    /* ══════════════════════════════════════════════════════════════════════
-       MAIN LAYOUT
-       ══════════════════════════════════════════════════════════════════════ */
-    main { flex:1; display:flex; gap:0; overflow:hidden; }
-    #chat-panel { flex:1; display:flex; flex-direction:column; min-width:0; }
-    #messages {
-      flex:1; overflow-y:auto; padding:20px;
-      display:flex; flex-direction:column; gap:14px;
+    /* ═══════ VOICE CONTROLS ═══════ */
+    #voice-area{
+      position:fixed;bottom:0;left:0;right:0;
+      display:flex;flex-direction:column;align-items:center;
+      padding:12px 20px 28px;
+      background:linear-gradient(to top,rgba(26,26,46,.96) 60%,transparent);
+      z-index:100;
     }
-    .msg {
-      max-width:75%; padding:12px 16px; border-radius:var(--radius);
-      line-height:1.5; font-size:.95rem; animation:fadein .25s ease;
-    }
-    @keyframes fadein { from { opacity:0; transform:translateY(6px); } to { opacity:1; } }
-    .msg.bot { background:#fff; border:1px solid #e5e5e5; border-bottom-left-radius:4px; align-self:flex-start; }
-    .msg.user { background:var(--red); color:#fff; border-bottom-right-radius:4px; align-self:flex-end; }
-    .msg.bot .avatar { font-size:1.1rem; margin-right:6px; }
-    .msg.bot .speak-btn {
-      background:none; border:none; cursor:pointer;
-      font-size:.85rem; margin-left:8px; opacity:.5;
-      transition:opacity .2s; vertical-align:middle;
-    }
-    .msg.bot .speak-btn:hover { opacity:1; }
-    .typing { display:flex; gap:5px; padding:14px 18px; align-items:center; }
-    .typing span { width:8px; height:8px; background:#ccc; border-radius:50%; animation:bounce 1.2s infinite; }
-    .typing span:nth-child(2) { animation-delay:.2s; }
-    .typing span:nth-child(3) { animation-delay:.4s; }
-    @keyframes bounce { 0%,80%,100% { transform:translateY(0); } 40% { transform:translateY(-8px); } }
+    #silence-bar-wrap{width:200px;height:3px;border-radius:2px;overflow:hidden;margin-bottom:8px;display:none}
+    #silence-bar-wrap.active{display:block;background:rgba(255,255,255,.15)}
+    #silence-bar{height:100%;width:0%;background:var(--red);transition:width linear}
 
-    /* ── Input bar ── */
-    #input-bar {
-      padding:14px 20px; background:#fff; border-top:1px solid #e5e5e5;
-      display:flex; gap:10px; align-items:center;
+    #transcript{
+      font-size:.88rem;color:rgba(255,255,255,.5);font-style:italic;
+      margin-bottom:12px;max-width:400px;text-align:center;min-height:22px;
     }
-    #user-input {
-      flex:1; padding:12px 16px; border:1.5px solid #ddd;
-      border-radius:30px; font-size:.95rem; outline:none;
-      transition:border-color .2s;
+    #text-input-bar{display:none;width:100%;max-width:460px;gap:10px;align-items:center;margin-bottom:10px}
+    #text-input-bar.visible{display:flex}
+    #user-input{
+      flex:1;padding:12px 18px;border:1px solid rgba(255,255,255,.2);border-radius:30px;
+      background:rgba(255,255,255,.08);color:#fff;font-size:.95rem;outline:none;
+      font-family:'Inter',sans-serif;
     }
-    #user-input:focus { border-color:var(--red); }
-    #send-btn {
-      background:var(--red); color:#fff; border:none;
-      padding:12px 22px; border-radius:30px; font-size:.95rem;
-      font-weight:600; cursor:pointer;
-      transition:background .2s, transform .1s;
+    #user-input::placeholder{color:rgba(255,255,255,.3)}
+    #user-input:focus{border-color:var(--red)}
+    #send-btn{
+      padding:12px 22px;border:none;border-radius:30px;background:var(--red);color:#fff;
+      font-weight:600;font-size:.95rem;cursor:pointer;font-family:'Inter',sans-serif;
     }
-    #send-btn:hover { background:#c1121f; }
-    #send-btn:active { transform:scale(.97); }
-    #send-btn:disabled { background:#aaa; cursor:not-allowed; }
+    #send-btn:hover{background:var(--red-dk)}
+    #send-btn:disabled{background:#555;cursor:not-allowed}
 
-    /* ── Mic button ── */
-    #mic-btn {
-      width:48px; height:48px; border-radius:50%; border:none;
-      background:var(--red); color:#fff; font-size:1.3rem;
-      cursor:pointer; flex-shrink:0; display:flex;
-      align-items:center; justify-content:center;
-      transition:background .2s, transform .15s, box-shadow .2s;
+    .voice-btns{display:flex;gap:16px;align-items:center}
+    #mic-btn{
+      width:64px;height:64px;border-radius:50%;border:none;
+      background:var(--red);color:#fff;font-size:1.6rem;cursor:pointer;
+      display:flex;align-items:center;justify-content:center;
+      transition:background .2s,transform .15s,box-shadow .2s;
+      box-shadow:0 4px 20px rgba(230,57,70,.4);
     }
-    #mic-btn:hover { background:#c1121f; transform:scale(1.05); }
-    #mic-btn:active { transform:scale(.95); }
-    #mic-btn.recording {
-      background:#22c55e;
-      box-shadow:0 0 0 4px rgba(34,197,94,.3);
-      animation:mic-pulse 1.2s infinite;
+    #mic-btn:hover{background:var(--red-dk);transform:scale(1.06)}
+    #mic-btn:active{transform:scale(.94)}
+    #mic-btn.recording{background:#22c55e;box-shadow:0 0 0 6px rgba(34,197,94,.25);animation:mic-pulse 1.2s infinite}
+    @keyframes mic-pulse{0%,100%{box-shadow:0 0 0 6px rgba(34,197,94,.25)}50%{box-shadow:0 0 0 14px rgba(34,197,94,.06)}}
+    #mic-btn:disabled{background:#555;cursor:not-allowed;box-shadow:none;animation:none}
+    .mode-btn{
+      width:40px;height:40px;border-radius:50%;border:1px solid rgba(255,255,255,.2);
+      background:rgba(255,255,255,.08);color:#fff;font-size:1rem;cursor:pointer;
+      display:flex;align-items:center;justify-content:center;transition:background .2s;
     }
-    @keyframes mic-pulse {
-      0%,100% { box-shadow:0 0 0 4px rgba(34,197,94,.3); }
-      50%     { box-shadow:0 0 0 10px rgba(34,197,94,.08); }
-    }
-    #mic-btn:disabled { background:#aaa; cursor:not-allowed; box-shadow:none; animation:none; }
-    body.voice-mode #user-input { display:none; }
-    body.voice-mode #send-btn   { display:none; }
-    body.voice-mode #mic-btn    { width:56px; height:56px; font-size:1.5rem; }
-    body.text-mode  #mic-btn    { display:none; }
-    #live-transcript {
-      flex:1; font-size:.9rem; color:#999; font-style:italic;
-      padding:0 12px; overflow:hidden; text-overflow:ellipsis; display:none;
-    }
-    body.voice-mode #live-transcript { display:block; }
+    .mode-btn:hover{background:rgba(255,255,255,.18)}
 
-    /* ── Silence timer bar ── */
-    #silence-bar-wrap {
-      height:3px; background:transparent; width:100%;
-      position:relative; overflow:hidden; display:none;
+    @media(max-width:500px){
+      .order-card{padding:22px 16px;border-radius:18px}
+      .landing-title{font-size:2.4rem}
+      #toasts{left:10px;right:10px;max-width:none}
+      .row-label{width:56px;font-size:.74rem}
     }
-    #silence-bar-wrap.active { display:block; background:#e5e5e5; }
-    #silence-bar {
-      height:100%; width:0%; background:var(--red);
-      transition: width linear;
-    }
-
-    /* ── Receipt panel ── */
-    #receipt-panel {
-      width:340px; background:#fff; border-left:1px solid #e5e5e5;
-      display:flex; flex-direction:column; overflow-y:auto; transition:width .3s;
-    }
-    #receipt-panel.empty {
-      display:flex; align-items:center; justify-content:center;
-      color:#bbb; font-size:.9rem; text-align:center; padding:20px;
-    }
-    #receipt-panel.empty::after { content:"🍕\nYour order receipt\nwill appear here"; white-space:pre; line-height:2; }
-    #receipt-content { padding:20px; }
-    .receipt-header { text-align:center; border-bottom:2px dashed #eee; padding-bottom:14px; margin-bottom:14px; }
-    .receipt-header h2 { color:var(--red); font-size:1.3rem; }
-    .receipt-header p { color:#888; font-size:.8rem; margin-top:4px; }
-    .receipt-section { margin-bottom:12px; }
-    .receipt-section h3 { font-size:.75rem; text-transform:uppercase; letter-spacing:.08em; color:#999; margin-bottom:6px; }
-    .receipt-row { display:flex; justify-content:space-between; font-size:.9rem; padding:3px 0; }
-    .receipt-row.total { font-weight:700; font-size:1.05rem; border-top:2px solid var(--dark); padding-top:8px; margin-top:4px; }
-    .receipt-row.tax { color:#888; font-size:.85rem; }
-    .topping-chip {
-      display:inline-flex; align-items:center; gap:4px;
-      background:var(--light); padding:3px 10px; border-radius:20px;
-      font-size:.82rem; margin:3px 3px 3px 0;
-    }
-    .order-id { text-align:center; margin-top:16px; font-size:.78rem; color:#bbb; letter-spacing:.05em; }
-    @media (max-width:640px) { #receipt-panel { width:0; overflow:hidden; border:none; } }
   </style>
 </head>
-<body class="voice-mode">
+<body>
 
-<!-- ══════════  LANDING PAGE  ══════════ -->
+<!-- ══════════ LANDING ══════════ -->
 <div id="landing">
   <div class="landing-pizza">🍕</div>
   <h1 class="landing-title">PizzaVoice</h1>
-  <p class="landing-sub">
-    Your AI-powered pizza waiter. Just speak &mdash; Pino will take your order,
-    suggest the perfect toppings, and handle everything by voice.
-  </p>
+  <p class="landing-sub">Your AI-powered pizza waiter. Just speak &mdash; Pino will build your perfect order in real time.</p>
   <div class="landing-features">
     <div class="landing-feat"><span class="icon">🎙️</span> Voice ordering</div>
     <div class="landing-feat"><span class="icon">🤖</span> AI-powered</div>
-    <div class="landing-feat"><span class="icon">🍕</span> Full menu</div>
-    <div class="landing-feat"><span class="icon">🧾</span> Live receipt</div>
+    <div class="landing-feat"><span class="icon">📋</span> Live order card</div>
+    <div class="landing-feat"><span class="icon">🧾</span> Instant receipt</div>
   </div>
   <button id="start-btn">🎤&ensp;Start Ordering</button>
   <p class="landing-footer">Powered by HuggingFace &bull; Free &amp; Open Source</p>
 </div>
 
-<!-- ══════════  MAIN APP  ══════════ -->
-<header>
-  <span class="logo">🍕</span>
-  <h1>PizzaVoice</h1>
-  <div class="header-right">
-    <span id="voice-status"></span>
-    <button id="mode-toggle" class="voice-active" title="Switch between Voice and Text mode">
-      <span class="icon">🎙️</span> <span id="mode-label">Voice</span>
-    </button>
-    <div class="status-dot" title="Online"></div>
-  </div>
-</header>
+<!-- ══════════ STATUS ══════════ -->
+<span id="status-badge"></span>
 
-<main>
-  <section id="chat-panel">
-    <div id="messages"></div>
+<!-- ══════════ APPLICATION ══════════ -->
+<div id="app">
+  <div id="toasts"></div>
+
+  <!-- Live Order Card -->
+  <div class="order-card" id="order-card">
+    <div class="card-header">
+      <h2 id="card-title">🍕 Building Your Pizza</h2>
+      <p id="card-sub">Speak to Pino — your order appears here live</p>
+    </div>
+
+    <div class="order-row"><span class="row-icon">👤</span><span class="row-label">Name</span>
+      <span class="row-value waiting" id="val-name"></span><span class="row-price"></span></div>
+    <div class="order-row"><span class="row-icon">📏</span><span class="row-label">Size</span>
+      <span class="row-value waiting" id="val-size"></span><span class="row-price" id="pr-size"></span></div>
+    <div class="order-row"><span class="row-icon">🍞</span><span class="row-label">Crust</span>
+      <span class="row-value waiting" id="val-crust"></span><span class="row-price" id="pr-crust"></span></div>
+    <div class="order-row"><span class="row-icon">🍅</span><span class="row-label">Sauce</span>
+      <span class="row-value waiting" id="val-sauce"></span><span class="row-price" id="pr-sauce"></span></div>
+    <div class="order-row"><span class="row-icon">🧀</span><span class="row-label">Cheese</span>
+      <span class="row-value waiting" id="val-cheese"></span><span class="row-price" id="pr-cheese"></span></div>
+    <div class="order-row"><span class="row-icon">🍕</span><span class="row-label">Toppings</span>
+      <div class="chips-area waiting" id="chips-tops"></div><span class="row-price" id="pr-tops"></span></div>
+    <div class="order-row"><span class="row-icon">🥤</span><span class="row-label">Drinks</span>
+      <div class="chips-area waiting" id="chips-drinks"></div><span class="row-price" id="pr-drinks"></span></div>
+    <div class="order-row"><span class="row-icon">🔢</span><span class="row-label">Quantity</span>
+      <span class="row-value" id="val-qty" style="color:rgba(255,255,255,.55)">1</span><span class="row-price"></span></div>
+    <div class="order-row"><span class="row-icon">📍</span><span class="row-label">Address</span>
+      <span class="row-value waiting" id="val-address"></span><span class="row-price"></span></div>
+
+    <div class="pricing-section" id="pricing">
+      <div class="price-row"><span>Subtotal</span><span id="p-sub">$0.00</span></div>
+      <div class="price-row"><span>Tax (13%)</span><span id="p-tax">$0.00</span></div>
+      <div class="price-row total"><span>💰 Total</span><span id="p-total">$0.00</span></div>
+    </div>
+    <div id="quote-area"></div>
+    <div id="oid-area"></div>
+  </div>
+
+  <!-- Voice Controls -->
+  <div id="voice-area">
     <div id="silence-bar-wrap"><div id="silence-bar"></div></div>
-    <div id="input-bar">
+    <div id="transcript">Tap the mic &amp; start speaking…</div>
+    <div id="text-input-bar">
       <input id="user-input" type="text" placeholder="Type your message…" autocomplete="off"/>
-      <span id="live-transcript">Tap the mic &amp; speak…</span>
-      <button id="mic-btn" title="Tap to speak">🎤</button>
       <button id="send-btn">Send</button>
     </div>
-  </section>
-  <aside id="receipt-panel" class="empty"></aside>
-</main>
+    <div class="voice-btns">
+      <button class="mode-btn" id="mode-btn" title="Switch to text input">⌨️</button>
+      <button id="mic-btn" title="Tap to speak">🎤</button>
+    </div>
+  </div>
+</div>
 
 <script>
-  /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-     DOM REFS
-     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
-  const messagesEl     = document.getElementById("messages");
-  const inputEl        = document.getElementById("user-input");
-  const sendBtn        = document.getElementById("send-btn");
-  const receiptEl      = document.getElementById("receipt-panel");
-  const micBtn         = document.getElementById("mic-btn");
-  const modeToggle     = document.getElementById("mode-toggle");
-  const modeLabel      = document.getElementById("mode-label");
-  const voiceStatus    = document.getElementById("voice-status");
-  const liveTranscript = document.getElementById("live-transcript");
-  const landing        = document.getElementById("landing");
-  const startBtn       = document.getElementById("start-btn");
-  const silenceWrap    = document.getElementById("silence-bar-wrap");
-  const silenceBar     = document.getElementById("silence-bar");
+/* ━━━ DOM ━━━ */
+const $=id=>document.getElementById(id);
+const landing=$('landing'), appEl=$('app'), startBtn=$('start-btn');
+const toastsEl=$('toasts'), micBtn=$('mic-btn'), sendBtn=$('send-btn');
+const inputEl=$('user-input'), transcriptEl=$('transcript');
+const modeBtnEl=$('mode-btn'), textBar=$('text-input-bar');
+const silenceWrap=$('silence-bar-wrap'), silenceBarEl=$('silence-bar');
+const statusBadge=$('status-badge');
 
-  let history   = [];
-  let voiceMode = true;
-  let appStarted = false;
+let history=[], voiceMode=true, appStarted=false;
 
-  /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-     LANDING PAGE
-     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
-  startBtn.addEventListener("click", () => {
-    landing.classList.add("hidden");
-    setTimeout(() => { landing.style.display = "none"; }, 600);
-    if (!appStarted) {
-      appStarted = true;
-      const greeting = "Ciao! Welcome to PizzaVoice! I'm Pino. What can I get for you today?";
-      addMsg("bot", greeting);
-      setTimeout(() => speakNatural(greeting), 400);
-    }
-  });
+/* ━━━ PRICE MAPS ━━━ */
+const P_SIZE={personal:7.99,small:9.99,medium:13.99,large:16.99,'extra large':19.99,xl:19.99};
+const P_CRUST={thin:0,thick:0,'hand tossed':0,regular:0,stuffed:2.50,cauliflower:3.00,'gluten free':2.50,'gluten-free':2.50};
+const P_SAUCE={marinara:0,tomato:0,bbq:0,ranch:0,buffalo:0,'garlic butter':0,alfredo:.50,pesto:.50,white:.50};
+const P_CHEESE={mozzarella:0,'no cheese':0,cheddar:.50,parmesan:.50,feta:1,gouda:1,ricotta:.75,'dairy-free':1.50,vegan:1.50};
+const P_TOP={pepperoni:1.50,mushrooms:1,mushroom:1,spinach:1,'jalapeños':.75,jalapenos:.75,olives:1,'black olives':1,'bell peppers':1,'bell pepper':1,'red onion':.75,onion:.75,'grilled chicken':2,chicken:2,'ground beef':2,beef:2,sausage:1.75,bacon:1.75,ham:1.50,pineapple:1,tomatoes:1,'fresh tomatoes':1,basil:.75,garlic:.75,arugula:1,broccoli:1,corn:.75,artichoke:1.50,anchovies:1.50,avocado:1.50,prosciutto:2.50,truffle:3,zucchini:1,'sun-dried tomatoes':1.25};
+const P_DRINK={cola:2.49,'diet cola':2.49,sprite:2.49,fanta:2.49,'root beer':2.49,'orange juice':2.99,'apple juice':2.99,lemonade:2.99,water:1.49,'still water':1.49,'sparkling water':1.99,sparkling:1.99,espresso:3.49,cappuccino:4.49,'italian soda':3.99,limonata:3.99,'craft beer':5.99,beer:5.99,'red wine':6.99,'white wine':6.99,prosecco:7.99};
+const SIZE_LBL={personal:'Personal 6"',small:'Small 8"',medium:'Medium 12"',large:'Large 14"','extra large':'XL 16"',xl:'XL 16"'};
 
-  /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-     NATURAL TTS  (HF Inference API → falls back to browser)
-     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
-  let currentAudio   = null;
-  let ttsEnabled     = true;
-  let femaleVoice    = null;
+function lookup(map,val){
+  if(!val)return 0;const v=val.toLowerCase();
+  const keys=Object.keys(map).sort((a,b)=>b.length-a.length);
+  for(const k of keys){if(v.includes(k)||k.includes(v))return map[k]}return 0;
+}
+function fmt(n){return'$'+n.toFixed(2)}
+function titleCase(s){return s.replace(/\b\w/g,c=>c.toUpperCase())}
+function escHtml(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>')}
 
-  // Load browser voices as fallback
-  function loadVoices() {
-    const voices = speechSynthesis.getVoices();
-    if (!voices.length) return;
-    const prefs = [
-      v => /zira/i.test(v.name),
-      v => /samantha/i.test(v.name),
-      v => /google.*female/i.test(v.name),
-      v => /female/i.test(v.name) && /en/i.test(v.lang),
-      v => (/en[-_]/i.test(v.lang)) && !/(male|david|mark|james|daniel|guy|richard)/i.test(v.name),
-      v => /en[-_]/i.test(v.lang),
-    ];
-    for (const test of prefs) {
-      const m = voices.find(test);
-      if (m) { femaleVoice = m; break; }
-    }
-    if (!femaleVoice) femaleVoice = voices[0];
+/* ━━━ LANDING ━━━ */
+startBtn.addEventListener('click',()=>{
+  landing.classList.add('hidden');
+  setTimeout(()=>landing.style.display='none',600);
+  appEl.classList.add('visible');
+  if(!appStarted){
+    appStarted=true;
+    const g="Ciao! Welcome to PizzaVoice! I'm Pino — what's your name?";
+    showToast(g);
+    setTimeout(()=>speakNatural(g),400);
   }
-  speechSynthesis.addEventListener("voiceschanged", loadVoices);
-  loadVoices();
+});
 
-  function browserSpeak(text) {
-    speechSynthesis.cancel();
-    const clean = text.replace(/[#*_~`>]/g,"").replace(/\bhttps?:\/\/\S+/g,"link");
-    const utt = new SpeechSynthesisUtterance(clean);
-    if (femaleVoice) utt.voice = femaleVoice;
-    utt.rate = 1.02; utt.pitch = 1.12; utt.lang = "en-US";
-    utt.onstart = () => setVoiceStatus("speaking","🔊 Speaking…");
-    utt.onend   = () => setVoiceStatus("idle");
-    utt.onerror = () => setVoiceStatus("idle");
-    speechSynthesis.speak(utt);
-  }
+/* ━━━ TOASTS ━━━ */
+function showToast(text){
+  const el=document.createElement('div');el.className='toast';
+  el.innerHTML=`<span class="toast-avatar">👩‍🍳</span><span>${escHtml(text)}</span><button class="speak-btn" title="Replay">🔊</button>`;
+  el.querySelector('.speak-btn').addEventListener('click',()=>speakNatural(text));
+  toastsEl.appendChild(el);
+  setTimeout(()=>{el.classList.add('out');setTimeout(()=>el.remove(),400)},7000);
+  while(toastsEl.children.length>3)toastsEl.firstChild.remove();
+}
 
-  async function speakNatural(text) {
-    if (!ttsEnabled || !voiceMode) return;
-    stopSpeaking();
-    setVoiceStatus("speaking","🔊 Speaking…");
+/* ━━━ ORDER CARD ━━━ */
+let prev={name:null,size:null,crust:null,sauce:null,cheese:null,toppings:[],drinks:[],extras:[],quantity:1,address:null};
 
-    try {
-      const res = await fetch("/tts", {
-        method: "POST",
-        headers: {"Content-Type":"application/json"},
-        body: JSON.stringify({text}),
-      });
-      if (!res.ok) throw new Error("TTS endpoint returned " + res.status);
-      const blob = await res.blob();
-      if (blob.size < 100) throw new Error("Empty audio");
-
-      const url = URL.createObjectURL(blob);
-      currentAudio = new Audio(url);
-      currentAudio.onended = () => { setVoiceStatus("idle"); URL.revokeObjectURL(url); currentAudio = null; };
-      currentAudio.onerror = () => { setVoiceStatus("idle"); URL.revokeObjectURL(url); currentAudio = null; browserSpeak(text); };
-      currentAudio.play();
-    } catch(e) {
-      console.warn("[TTS] HF failed, falling back to browser:", e.message);
-      browserSpeak(text);
+function updateCard(p){
+  if(!p)return;
+  const simple=[
+    {k:'name',   vId:'val-name',   pId:null,       map:null},
+    {k:'size',   vId:'val-size',   pId:'pr-size',  map:P_SIZE,  lbl:SIZE_LBL},
+    {k:'crust',  vId:'val-crust',  pId:'pr-crust', map:P_CRUST},
+    {k:'sauce',  vId:'val-sauce',  pId:'pr-sauce', map:P_SAUCE},
+    {k:'cheese', vId:'val-cheese', pId:'pr-cheese',map:P_CHEESE},
+    {k:'address',vId:'val-address',pId:null,       map:null},
+  ];
+  for(const f of simple){
+    const v=p[f.k];
+    if(v && v!==prev[f.k]){
+      const el=$(f.vId);el.className='row-value filled';
+      el.textContent=(f.lbl&&f.lbl[v.toLowerCase()])||titleCase(v);
+      if(f.pId&&f.map){
+        const pr=lookup(f.map,v);
+        $(f.pId).textContent=f.k==='size'?fmt(pr):(pr>0?'+'+fmt(pr):'free');
+      }
     }
   }
+  if(p.quantity&&p.quantity!==prev.quantity) $('val-qty').textContent=p.quantity;
 
-  function stopSpeaking() {
-    if (currentAudio) { currentAudio.pause(); currentAudio = null; }
-    speechSynthesis.cancel();
-    setVoiceStatus("idle");
+  const nt=p.toppings||[], od=prev.toppings||[];
+  if(JSON.stringify(nt)!==JSON.stringify(od)) renderChips('chips-tops','pr-tops',nt,P_TOP);
+  const nd=p.drinks||[], oddK=prev.drinks||[];
+  if(JSON.stringify(nd)!==JSON.stringify(oddK)) renderChips('chips-drinks','pr-drinks',nd,P_DRINK);
+
+  prev={...p};
+  recalcPrice(p);
+}
+
+function renderChips(cId,pId,items,map){
+  const c=$(cId);c.className='chips-area'+(items.length?'':' waiting');c.innerHTML='';
+  let tot=0;
+  for(const it of items){
+    if(!it||it.toLowerCase()==='none')continue;
+    const pr=lookup(map,it);tot+=pr;
+    const s=document.createElement('span');s.className='chip';
+    s.innerHTML=`${titleCase(it)} <span class="cp">${fmt(pr)}</span>`;
+    c.appendChild(s);
   }
+  if(pId) $(pId).textContent=tot>0?'+'+fmt(tot):'';
+}
 
-  /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-     SPEECH-TO-TEXT  — continuous + 2-second silence detection
-     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
-  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  let recognition   = null;
-  let isRecording   = false;
-  let silenceTimer  = null;
-  let accumulated   = "";            // final transcript pieces
-  let interimText   = "";            // current interim
-  const SILENCE_MS  = 2000;          // wait 2 seconds of silence
+function recalcPrice(p){
+  const base=lookup(P_SIZE,p.size), crust=lookup(P_CRUST,p.crust),
+        sauce=lookup(P_SAUCE,p.sauce), cheese=lookup(P_CHEESE,p.cheese);
+  let topT=0;for(const t of(p.toppings||[]))topT+=lookup(P_TOP,t);
+  let drkT=0;for(const d of(p.drinks||[]))drkT+=lookup(P_DRINK,d);
+  const qty=Math.max(1,p.quantity||1);
+  const sub=(base+crust+sauce+cheese+topT)*qty+drkT;
+  const tax=sub*0.13;
+  $('p-sub').textContent=fmt(sub);
+  $('p-tax').textContent=fmt(tax);
+  $('p-total').textContent=fmt(sub+tax);
+}
 
-  if (SpeechRecognition) {
-    recognition = new SpeechRecognition();
-    recognition.continuous     = true;       // keep listening
-    recognition.interimResults = true;
-    recognition.lang           = "en-US";
+function showReceipt(r){
+  const card=$('order-card');card.classList.add('confirmed');
+  $('card-title').textContent='✅ Order Confirmed!';
+  $('card-sub').textContent=r.timestamp;
+  const o=r.order,p=r.pricing;
+  setF('val-name',titleCase(o.name||'Friend'));
+  setF('val-size',o.size.label,'pr-size',fmt(o.size.price));
+  setF('val-crust',o.crust.label,'pr-crust',o.crust.price>0?'+'+fmt(o.crust.price):'free');
+  setF('val-sauce',o.sauce.label,'pr-sauce',o.sauce.price>0?'+'+fmt(o.sauce.price):'free');
+  setF('val-cheese',o.cheese.label,'pr-cheese',o.cheese.price>0?'+'+fmt(o.cheese.price):'free');
+  setF('val-address',o.address||'Pick-up');
+  $('val-qty').textContent=o.quantity;
+  const tc=$('chips-tops');tc.className='chips-area';
+  tc.innerHTML=o.toppings.length?o.toppings.map(t=>`<span class="chip">${t.emoji} ${t.label} <span class="cp">${fmt(t.price)}</span></span>`).join(''):'<span style="color:rgba(255,255,255,.3);font-size:.82rem">None</span>';
+  $('pr-tops').textContent=p.breakdown.toppings>0?'+'+fmt(p.breakdown.toppings):'';
+  const dc=$('chips-drinks');dc.className='chips-area';
+  dc.innerHTML=(o.drinks&&o.drinks.length)?o.drinks.map(d=>`<span class="chip">${d.emoji} ${d.label} <span class="cp">${fmt(d.price)}</span></span>`).join(''):'<span style="color:rgba(255,255,255,.3);font-size:.82rem">None</span>';
+  $('pr-drinks').textContent=p.breakdown.drinks>0?'+'+fmt(p.breakdown.drinks):'';
+  $('p-sub').textContent=fmt(p.subtotal);
+  $('p-tax').textContent=fmt(p.tax);
+  $('p-total').textContent=fmt(p.total);
+  $('quote-area').innerHTML=r.quote?`<div class="quote-box">${escHtml(r.quote)}</div>`:'';
+  $('oid-area').innerHTML=`<div class="order-id-text">Order #${r.order_id}</div>`;
+}
+function setF(vId,text,pId,pt){const el=$(vId);el.className='row-value filled';el.textContent=text;if(pId&&pt!==undefined)$(pId).textContent=pt;}
 
-    recognition.onresult = (e) => {
-      let interim = "", final_ = "";
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        const t = e.results[i][0].transcript;
-        if (e.results[i].isFinal) final_ += t;
-        else                      interim += t;
-      }
-      if (final_) accumulated += (accumulated ? " " : "") + final_.trim();
-      interimText = interim;
-      liveTranscript.textContent = (accumulated + " " + interim).trim() || "Listening…";
+/* ━━━ TTS — Natural (Edge/HF) → Browser fallback ━━━ */
+let currentAudio=null, femaleVoice=null;
+function loadVoices(){
+  const v=speechSynthesis.getVoices();if(!v.length)return;
+  const tests=[v=>(/zira/i).test(v.name),v=>(/samantha/i).test(v.name),v=>(/google.*female/i).test(v.name),
+    v=>(/female/i).test(v.name)&&(/en/i).test(v.lang),
+    v=>(/en[-_]/i).test(v.lang)&&!/(male|david|mark|james|daniel)/i.test(v.name),
+    v=>(/en[-_]/i).test(v.lang)];
+  for(const t of tests){const m=v.find(t);if(m){femaleVoice=m;break}}
+  if(!femaleVoice)femaleVoice=v[0];
+}
+speechSynthesis.addEventListener('voiceschanged',loadVoices);loadVoices();
 
-      // Reset the silence timer every time we get new speech
-      clearSilenceTimer();
-      if (accumulated || interim) startSilenceTimer();
-    };
+function browserSpeak(text){
+  speechSynthesis.cancel();
+  const c=text.replace(/[#*_~`>]/g,'').replace(/\bhttps?:\/\/\S+/g,'link');
+  const u=new SpeechSynthesisUtterance(c);
+  if(femaleVoice)u.voice=femaleVoice;u.rate=1.02;u.pitch=1.12;u.lang='en-US';
+  u.onstart=()=>setStatus('speaking');u.onend=()=>setStatus('idle');u.onerror=()=>setStatus('idle');
+  speechSynthesis.speak(u);
+}
+async function speakNatural(text){
+  if(!voiceMode)return;stopSpeaking();setStatus('speaking');
+  try{
+    const r=await fetch('/tts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});
+    if(!r.ok)throw new Error(r.status);
+    const blob=await r.blob();if(blob.size<100)throw new Error('empty');
+    const url=URL.createObjectURL(blob);
+    currentAudio=new Audio(url);
+    currentAudio.onended=()=>{setStatus('idle');URL.revokeObjectURL(url);currentAudio=null};
+    currentAudio.onerror=()=>{setStatus('idle');URL.revokeObjectURL(url);currentAudio=null;browserSpeak(text)};
+    currentAudio.play();
+  }catch(e){console.warn('[TTS] fallback:',e);browserSpeak(text)}
+}
+function stopSpeaking(){if(currentAudio){currentAudio.pause();currentAudio=null}speechSynthesis.cancel();setStatus('idle')}
 
-    recognition.onerror = (e) => {
-      console.warn("[STT] Error:", e.error);
-      if (e.error === "not-allowed") {
-        stopRecording();
-        addMsg("bot","⚠️ Microphone access was denied. Please allow mic or switch to Text mode.");
-      }
-      // For "no-speech" or "network" errors, just keep going
-      if (e.error === "aborted") stopRecording();
-    };
+/* ━━━ STT — continuous + 2-second silence ━━━ */
+const SpeechRecognition=window.SpeechRecognition||window.webkitSpeechRecognition;
+let recognition=null, isRecording=false, silenceTimer=null, accumulated='';
+const SILENCE_MS=2000;
 
-    recognition.onend = () => {
-      // If still in recording mode, auto-restart (browser sometimes stops)
-      if (isRecording) {
-        try { recognition.start(); } catch(_) {}
-      }
-    };
-  }
+if(SpeechRecognition){
+  recognition=new SpeechRecognition();
+  recognition.continuous=true;recognition.interimResults=true;recognition.lang='en-US';
 
-  function startSilenceTimer() {
+  recognition.onresult=e=>{
+    let interim='',final_='';
+    for(let i=e.resultIndex;i<e.results.length;i++){
+      const t=e.results[i][0].transcript;
+      if(e.results[i].isFinal)final_+=t;else interim+=t;
+    }
+    if(final_)accumulated+=(accumulated?' ':'')+final_.trim();
+    transcriptEl.textContent=(accumulated+' '+interim).trim()||'Listening…';
     clearSilenceTimer();
-    silenceWrap.classList.add("active");
-    silenceBar.style.transition = "none";
-    silenceBar.style.width = "0%";
-    // Force reflow, then animate
-    silenceBar.offsetWidth;
-    silenceBar.style.transition = `width ${SILENCE_MS}ms linear`;
-    silenceBar.style.width = "100%";
+    if(accumulated||interim)startSilenceTimer();
+  };
+  recognition.onerror=e=>{
+    if(e.error==='not-allowed'){stopRecording();showToast('⚠️ Mic denied. Tap ⌨️ for text mode.')}
+    if(e.error==='aborted')stopRecording();
+  };
+  recognition.onend=()=>{if(isRecording)try{recognition.start()}catch(_){}};
+}
 
-    silenceTimer = setTimeout(() => {
-      // 2 seconds of silence — send what we have
-      if (accumulated.trim()) {
-        inputEl.value = accumulated.trim();
-        accumulated = "";
-        interimText = "";
-        stopRecording();
-        send();
-      }
-      hideSilenceBar();
-    }, SILENCE_MS);
-  }
-
-  function clearSilenceTimer() {
-    if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
+function startSilenceTimer(){
+  clearSilenceTimer();
+  silenceWrap.classList.add('active');
+  silenceBarEl.style.transition='none';silenceBarEl.style.width='0%';
+  silenceBarEl.offsetWidth;
+  silenceBarEl.style.transition=`width ${SILENCE_MS}ms linear`;silenceBarEl.style.width='100%';
+  silenceTimer=setTimeout(()=>{
+    if(accumulated.trim()){inputEl.value=accumulated.trim();accumulated='';stopRecording();send()}
     hideSilenceBar();
-  }
+  },SILENCE_MS);
+}
+function clearSilenceTimer(){if(silenceTimer){clearTimeout(silenceTimer);silenceTimer=null}hideSilenceBar()}
+function hideSilenceBar(){silenceWrap.classList.remove('active');silenceBarEl.style.transition='none';silenceBarEl.style.width='0%'}
 
-  function hideSilenceBar() {
-    silenceWrap.classList.remove("active");
-    silenceBar.style.transition = "none";
-    silenceBar.style.width = "0%";
-  }
+function startRecording(){
+  if(!recognition){showToast('⚠️ Speech not supported — use text mode.');return}
+  stopSpeaking();accumulated='';isRecording=true;
+  micBtn.classList.add('recording');transcriptEl.textContent='Listening…';setStatus('listening');
+  try{recognition.start()}catch(_){}
+}
+function stopRecording(){
+  isRecording=false;clearSilenceTimer();micBtn.classList.remove('recording');
+  transcriptEl.textContent='Tap the mic & speak…';setStatus('idle');
+  try{recognition.stop()}catch(_){}
+}
+micBtn.addEventListener('click',()=>isRecording?stopRecording():startRecording());
 
-  function startRecording() {
-    if (!recognition) {
-      addMsg("bot","⚠️ Your browser doesn't support speech recognition. Switch to Text mode.");
-      return;
-    }
-    stopSpeaking();
-    accumulated = "";
-    interimText = "";
-    isRecording = true;
-    micBtn.classList.add("recording");
-    liveTranscript.textContent = "Listening…";
-    setVoiceStatus("listening","🎙️ Listening…");
-    try { recognition.start(); } catch(_) {}
-  }
+/* ━━━ MODE TOGGLE ━━━ */
+modeBtnEl.addEventListener('click',()=>{
+  voiceMode=!voiceMode;
+  modeBtnEl.textContent=voiceMode?'⌨️':'🎙️';
+  modeBtnEl.title=voiceMode?'Switch to text':'Switch to voice';
+  micBtn.style.display=voiceMode?'flex':'none';
+  textBar.classList.toggle('visible',!voiceMode);
+  transcriptEl.style.display=voiceMode?'block':'none';
+  if(!voiceMode){stopRecording();stopSpeaking();inputEl.focus()}
+});
 
-  function stopRecording() {
-    isRecording = false;
-    clearSilenceTimer();
-    micBtn.classList.remove("recording");
-    liveTranscript.textContent = "Tap the mic & speak…";
-    setVoiceStatus("idle");
-    try { recognition.stop(); } catch(_) {}
-  }
+/* ━━━ STATUS ━━━ */
+function setStatus(s){
+  statusBadge.className='';statusBadge.style.display='none';
+  if(s==='listening'){statusBadge.textContent='🎙️ Listening…';statusBadge.className='listening';statusBadge.style.display='block'}
+  else if(s==='speaking'){statusBadge.textContent='🔊 Speaking…';statusBadge.className='speaking';statusBadge.style.display='block'}
+}
 
-  micBtn.addEventListener("click", () => {
-    if (isRecording) stopRecording();
-    else             startRecording();
-  });
-
-  /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-     MODE TOGGLE
-     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
-  function setMode(mode) {
-    voiceMode = mode === "voice";
-    document.body.className = voiceMode ? "voice-mode" : "text-mode";
-    modeLabel.textContent   = voiceMode ? "Voice" : "Text";
-    modeToggle.querySelector(".icon").textContent = voiceMode ? "🎙️" : "⌨️";
-    modeToggle.classList.toggle("voice-active", voiceMode);
-    if (!voiceMode) { stopRecording(); stopSpeaking(); setVoiceStatus("idle"); inputEl.focus(); }
-  }
-  modeToggle.addEventListener("click", () => setMode(voiceMode ? "text" : "voice"));
-
-  /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-     VOICE STATUS
-     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
-  function setVoiceStatus(state, label) {
-    voiceStatus.className = "";
-    voiceStatus.style.display = "none";
-    if (state === "listening") {
-      voiceStatus.textContent = label || "🎙️ Listening…";
-      voiceStatus.className = "listening"; voiceStatus.style.display = "inline-block";
-    } else if (state === "speaking") {
-      voiceStatus.textContent = label || "🔊 Speaking…";
-      voiceStatus.className = "speaking"; voiceStatus.style.display = "inline-block";
-    }
-  }
-
-  /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-     CHAT RENDERING
-     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
-  function addMsg(role, text) {
-    const div = document.createElement("div");
-    div.className = `msg ${role}`;
-    if (role === "bot") {
-      div.innerHTML = `<span class="avatar">👩‍🍳</span>${escHtml(text)}<button class="speak-btn" title="Read aloud">🔊</button>`;
-      div.querySelector(".speak-btn").addEventListener("click", () => {
-        ttsEnabled = true;
-        const was = voiceMode; voiceMode = true;
-        speakNatural(text);
-        voiceMode = was;
-      });
-    } else {
-      div.textContent = text;
-    }
-    messagesEl.appendChild(div);
-    messagesEl.scrollTop = messagesEl.scrollHeight;
-    return div;
-  }
-
-  function escHtml(s) {
-    return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/\n/g,"<br>");
-  }
-
-  function showTyping() {
-    const d = document.createElement("div");
-    d.className = "msg bot typing"; d.id = "typing";
-    d.innerHTML = "<span></span><span></span><span></span>";
-    messagesEl.appendChild(d); messagesEl.scrollTop = messagesEl.scrollHeight;
-  }
-  function hideTyping() { const t = document.getElementById("typing"); if (t) t.remove(); }
-
-  /* ── Receipt ── */
-  function renderReceipt(r) {
-    receiptEl.classList.remove("empty");
-    const o = r.order, p = r.pricing;
-    const fmt = n => `$${n.toFixed(2)}`;
-    let topsHtml = o.toppings.length
-      ? o.toppings.map(t=>`<span class="topping-chip">${t.emoji} ${t.label} <em style="color:#999">${fmt(t.price)}</em></span>`).join("")
-      : `<span style="color:#bbb;font-size:.85rem">None</span>`;
-    let drinksHtml = (o.drinks && o.drinks.length)
-      ? o.drinks.map(d=>`<span class="topping-chip">${d.emoji} ${d.label} <em style="color:#999">${fmt(d.price)}</em></span>`).join("")
-      : `<span style="color:#bbb;font-size:.85rem">None</span>`;
-    let extrasHtml = o.extras.length
-      ? o.extras.map(e=>`<div class="receipt-row"><span>${e.label}</span><span>${e.price?fmt(e.price):"free"}</span></div>`).join("") : "";
-
-    receiptEl.innerHTML = `<div id="receipt-content">
-      <div class="receipt-header">
-        <h2>🍕 Order Confirmed!</h2>
-        <p>${r.timestamp}</p>
-        <p style="margin-top:6px;font-size:.9rem">Hey <strong>${o.name}</strong>! Here's your order 👇</p>
-      </div>
-      <div class="receipt-section">
-        <h3>Pizza Details</h3>
-        <div class="receipt-row"><span>Size</span><span>${o.size.label}</span></div>
-        <div class="receipt-row"><span>Crust</span><span>${o.crust.label}</span></div>
-        <div class="receipt-row"><span>Sauce</span><span>${o.sauce.label}</span></div>
-        <div class="receipt-row"><span>Cheese</span><span>${o.cheese.label}</span></div>
-        <div class="receipt-row"><span>Qty</span><span>× ${o.quantity}</span></div>
-      </div>
-      <div class="receipt-section"><h3>Toppings</h3><div>${topsHtml}</div></div>
-      <div class="receipt-section"><h3>🥤 Drinks</h3><div>${drinksHtml}</div></div>
-      ${extrasHtml ? `<div class="receipt-section"><h3>Extras</h3>${extrasHtml}</div>` : ""}
-      <div class="receipt-section">
-        <h3>📍 Delivery Address</h3>
-        <p style="font-size:.9rem;color:var(--mid);line-height:1.5">${escHtml(o.address||'Pick-up')}</p>
-      </div>
-      <div class="receipt-section">
-        <h3>Pricing</h3>
-        <div class="receipt-row"><span>Base price</span><span>${fmt(p.breakdown.base)}</span></div>
-        ${p.breakdown.crust?`<div class="receipt-row"><span>Crust upgrade</span><span>+${fmt(p.breakdown.crust)}</span></div>`:""}
-        ${p.breakdown.sauce?`<div class="receipt-row"><span>Sauce upgrade</span><span>+${fmt(p.breakdown.sauce)}</span></div>`:""}
-        ${p.breakdown.cheese?`<div class="receipt-row"><span>Cheese upgrade</span><span>+${fmt(p.breakdown.cheese)}</span></div>`:""}
-        ${p.breakdown.toppings?`<div class="receipt-row"><span>Toppings</span><span>+${fmt(p.breakdown.toppings)}</span></div>`:""}
-        ${p.breakdown.drinks?`<div class="receipt-row"><span>Drinks</span><span>+${fmt(p.breakdown.drinks)}</span></div>`:""}
-        ${p.breakdown.extras?`<div class="receipt-row"><span>Extras</span><span>+${fmt(p.breakdown.extras)}</span></div>`:""}
-        ${p.quantity>1?`<div class="receipt-row"><span>Unit × ${p.quantity}</span><span>${fmt(p.unit)} × ${p.quantity}</span></div>`:""}
-        <div class="receipt-row"><span>Subtotal</span><span>${fmt(p.subtotal)}</span></div>
-        <div class="receipt-row tax"><span>Tax (13%)</span><span>${fmt(p.tax)}</span></div>
-        <div class="receipt-row total"><span>💰 Total Due</span><span style="color:var(--red);font-size:1.15rem">${fmt(p.total)}</span></div>
-      </div>
-      <div style="text-align:center;margin:16px 0 8px;padding:12px 10px;background:linear-gradient(135deg,#fff8f0,#fff3e0);border-radius:12px;border:1px dashed var(--orange)">
-        <p style="font-style:italic;font-size:.88rem;color:var(--mid);line-height:1.6">${escHtml(r.quote||'')}</p>
-      </div>
-      <div class="order-id">Order #${r.order_id}</div>
-    </div>`;
-  }
-
-  /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-     SEND MESSAGE
-     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
-  async function send() {
-    const text = inputEl.value.trim();
-    if (!text) return;
-    inputEl.value = "";
-    sendBtn.disabled = true;
-    micBtn.disabled  = true;
-    addMsg("user", text);
-    history.push({role:"user", content:text});
-
-    showTyping();
-    try {
-      const res  = await fetch("/chat", {
-        method:"POST", headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({history}),
-      });
-      const data = await res.json();
-      hideTyping();
-      if (data.reply) {
-        addMsg("bot", data.reply);
-        history.push({role:"assistant", content:data.reply});
-        speakNatural(data.reply);
-      }
-      if (data.receipt) renderReceipt(data.receipt);
-    } catch(err) {
-      hideTyping();
-      addMsg("bot","⚠️ Connection error — please try again.");
-    }
-    sendBtn.disabled = false;
-    micBtn.disabled  = false;
-    if (!voiceMode) inputEl.focus();
-  }
-
-  sendBtn.addEventListener("click", send);
-  inputEl.addEventListener("keydown", e => { if(e.key==="Enter" && !e.shiftKey) send(); });
+/* ━━━ SEND ━━━ */
+async function send(){
+  const text=inputEl.value.trim();if(!text)return;
+  inputEl.value='';sendBtn.disabled=true;micBtn.disabled=true;
+  history.push({role:'user',content:text});
+  try{
+    const r=await fetch('/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({history})});
+    const d=await r.json();
+    if(d.reply){showToast(d.reply);history.push({role:'assistant',content:d.reply});speakNatural(d.reply)}
+    if(d.partial)updateCard(d.partial);
+    if(d.receipt)showReceipt(d.receipt);
+  }catch(e){showToast('⚠️ Connection error — try again.')}
+  sendBtn.disabled=false;micBtn.disabled=false;
+  if(!voiceMode)inputEl.focus();
+}
+sendBtn.addEventListener('click',send);
+inputEl.addEventListener('keydown',e=>{if(e.key==='Enter')send()});
 </script>
 </body>
 </html>

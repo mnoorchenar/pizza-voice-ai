@@ -1,6 +1,11 @@
 ﻿from flask import Flask, render_template, request, jsonify, Response
 from huggingface_hub import InferenceClient
-import os, re, json, uuid, io
+import os, re, json, uuid, io, asyncio
+import requests as http_req
+try:
+    import edge_tts
+except ImportError:
+    edge_tts = None
 from datetime import datetime
 
 app = Flask(__name__)
@@ -64,6 +69,13 @@ BEHAVIOUR RULES:
 - The "address" must be the full delivery address the customer provided
 - NEVER output ##ORDER## before explicit confirmation
 - After outputting ##ORDER##, say a short warm farewell with a fancy Italian quote
+
+LIVE ORDER TRACKING:
+After EVERY reply (except the farewell after ##ORDER##), append on a new line at the very end:
+##UPDATE##{"name":null,"size":null,"crust":null,"sauce":null,"cheese":null,"toppings":[],"drinks":[],"extras":[],"quantity":1,"address":null}##END##
+Replace null with the confirmed lowercase value. Keep null for items not yet discussed.
+Toppings, drinks, extras arrays grow as items are confirmed.
+ALWAYS include this block — the customer sees a live order card built from it.
 """
 
 # ── Catalogue maps ─────────────────────────────────────────────────────────────
@@ -255,6 +267,31 @@ def extract_order(text):
     return ORDER_RE.sub("", text).strip(), data
 
 
+# ── Live-order partial extraction ──────────────────────────────────────────────
+UPDATE_RE = re.compile(
+    r"#{1,3}\s*UPDATE\s*#{1,3}(.*?)#{1,3}\s*END\s*#{1,3}",
+    re.DOTALL | re.IGNORECASE,
+)
+
+def extract_update(text):
+    """Pull the optional ##UPDATE##…##END## block, return (clean_text, dict|None)."""
+    m = UPDATE_RE.search(text)
+    if not m:
+        return text, None
+    raw = m.group(1).strip()
+    clean_text = UPDATE_RE.sub("", text).strip()
+    try:
+        return clean_text, json.loads(raw)
+    except json.JSONDecodeError:
+        inner = re.search(r"\{.*\}", raw, re.DOTALL)
+        if inner:
+            try:
+                return clean_text, json.loads(inner.group())
+            except Exception:
+                pass
+    return clean_text, None
+
+
 # ── Receipt builder ────────────────────────────────────────────────────────────
 def _pick(val, catalogue, default_key):
     if not val:
@@ -367,51 +404,76 @@ def build_receipt(order_data):
     }
 
 
-# ── TTS models (free HF Inference API — natural female voice) ──────────────────
-TTS_MODELS = [
+# ── Natural TTS (Edge TTS primary → HF Inference fallback) ────────────────────
+EDGE_VOICE = "en-US-JennyNeural"          # warm, natural Microsoft Neural voice
+HF_TTS_MODELS = [
     "espnet/kan-bayashi_ljspeech_vits",
     "facebook/mms-tts-eng",
 ]
 
 
+def _edge_tts_sync(text, voice=EDGE_VOICE):
+    """Run Edge TTS and return MP3 bytes synchronously."""
+    async def _generate():
+        comm = edge_tts.Communicate(text, voice)
+        buf = b""
+        async for chunk in comm.stream():
+            if chunk["type"] == "audio":
+                buf += chunk["data"]
+        return buf
+
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(_generate())
+    finally:
+        loop.close()
+
+
 @app.route("/tts", methods=["POST"])
 def tts():
-    """Generate natural-sounding speech audio from text via HF Inference API."""
+    """Natural speech: Edge TTS (Microsoft Neural) → HF Inference → 503."""
     data = request.get_json(force=True)
     text = (data.get("text") or "").strip()
     if not text:
         return Response(b"", status=400)
 
-    hf_token_raw    = os.environ.get("HF_TOKEN") or ""
-    hfhub_token_raw = os.environ.get("HUGGING_FACE_HUB_TOKEN") or ""
-    token = (hf_token_raw or hfhub_token_raw).strip()
-    if not token:
-        return Response(b"", status=500)
-
-    client = InferenceClient(token=token)
-
     # Clean text for speech
     clean = re.sub(r"[#*_~`>]", "", text)
     clean = re.sub(r"\bhttps?://\S+", "link", clean)
     clean = re.sub(r"\s+", " ", clean).strip()
-    # Truncate very long text to avoid timeouts
     if len(clean) > 500:
         clean = clean[:500]
 
-    for model_id in TTS_MODELS:
+    # 1) Edge TTS — very natural Microsoft Neural voices (free)
+    if edge_tts:
         try:
-            audio_bytes = client.text_to_speech(clean, model=model_id)
-            # audio_bytes is bytes (FLAC or WAV depending on model)
-            return Response(
-                audio_bytes,
-                mimetype="audio/flac",
-                headers={"Cache-Control": "no-cache"},
-            )
+            audio = _edge_tts_sync(clean)
+            if len(audio) > 100:
+                return Response(audio, mimetype="audio/mpeg",
+                                headers={"Cache-Control": "no-cache"})
         except Exception as e:
-            print(f"[TTS] ❌ {model_id}: {str(e)[:200]}", flush=True)
-            continue
+            print(f"[TTS] Edge failed: {str(e)[:200]}", flush=True)
 
-    # All TTS models failed — return empty so frontend falls back to browser TTS
+    # 2) HF Inference API direct REST as fallback
+    token = (os.environ.get("HF_TOKEN")
+             or os.environ.get("HUGGING_FACE_HUB_TOKEN") or "").strip()
+    if token:
+        for mid in HF_TTS_MODELS:
+            try:
+                r = http_req.post(
+                    f"https://api-inference.huggingface.co/models/{mid}",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={"inputs": clean,
+                          "options": {"wait_for_model": True}},
+                    timeout=30,
+                )
+                if r.status_code == 200 and len(r.content) > 100:
+                    ct = r.headers.get("content-type", "audio/flac")
+                    return Response(r.content, mimetype=ct,
+                                    headers={"Cache-Control": "no-cache"})
+            except Exception as e:
+                print(f"[TTS] HF {mid}: {str(e)[:200]}", flush=True)
+
     return Response(b"", status=503)
 
 
@@ -427,8 +489,9 @@ def chat():
     history     = data.get("history", [])
     reply       = chat_with_llm(history)
     reply, order_data = extract_order(reply)
+    reply, update_data = extract_update(reply)
     receipt     = build_receipt(order_data) if order_data else None
-    return jsonify({"reply": reply, "receipt": receipt})
+    return jsonify({"reply": reply, "partial": update_data, "receipt": receipt})
 
 
 if __name__ == "__main__":
