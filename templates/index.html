@@ -35,16 +35,62 @@
       box-shadow: 0 2px 8px rgba(0,0,0,.2);
     }
     header h1 { font-size: 1.4rem; font-weight: 700; }
-    header span { font-size: 1.8rem; }
+    header span.logo { font-size: 1.8rem; }
     .status-dot {
       width: 10px; height: 10px;
       background: #4ade80;
       border-radius: 50%;
-      margin-left: auto;
       animation: pulse 2s infinite;
     }
     @keyframes pulse {
       0%,100% { opacity: 1; } 50% { opacity: .4; }
+    }
+
+    /* ── Mode toggle in header ── */
+    .header-right {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    #mode-toggle {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(255,255,255,.18);
+      border: 1.5px solid rgba(255,255,255,.35);
+      border-radius: 24px;
+      padding: 5px 14px;
+      color: #fff;
+      font-size: .82rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background .2s, border-color .2s;
+      user-select: none;
+    }
+    #mode-toggle:hover { background: rgba(255,255,255,.28); }
+    #mode-toggle .icon { font-size: 1.05rem; }
+    #mode-toggle.voice-active { background: rgba(255,255,255,.32); border-color: #fff; }
+
+    /* ── Voice status badge ── */
+    #voice-status {
+      font-size: .72rem;
+      padding: 3px 10px;
+      border-radius: 12px;
+      background: rgba(255,255,255,.15);
+      color: rgba(255,255,255,.7);
+      display: none;
+    }
+    #voice-status.listening {
+      display: inline-block;
+      background: rgba(74,222,128,.25);
+      color: #4ade80;
+      animation: pulse 1.5s infinite;
+    }
+    #voice-status.speaking {
+      display: inline-block;
+      background: rgba(244,162,97,.25);
+      color: var(--orange);
     }
 
     /* ── Main layout ── */
@@ -95,6 +141,18 @@
       font-size: 1.1rem;
       margin-right: 6px;
     }
+    /* speaker icon on bot messages */
+    .msg.bot .speak-btn {
+      background: none;
+      border: none;
+      cursor: pointer;
+      font-size: .85rem;
+      margin-left: 8px;
+      opacity: .5;
+      transition: opacity .2s;
+      vertical-align: middle;
+    }
+    .msg.bot .speak-btn:hover { opacity: 1; }
 
     /* typing indicator */
     .typing { display: flex; gap: 5px; padding: 14px 18px; align-items: center; }
@@ -118,6 +176,7 @@
       border-top: 1px solid #e5e5e5;
       display: flex;
       gap: 10px;
+      align-items: center;
     }
     #user-input {
       flex: 1;
@@ -143,6 +202,57 @@
     #send-btn:hover  { background: #c1121f; }
     #send-btn:active { transform: scale(.97); }
     #send-btn:disabled { background: #aaa; cursor: not-allowed; }
+
+    /* ── Mic button ── */
+    #mic-btn {
+      width: 48px; height: 48px;
+      border-radius: 50%;
+      border: none;
+      background: var(--red);
+      color: #fff;
+      font-size: 1.3rem;
+      cursor: pointer;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background .2s, transform .15s, box-shadow .2s;
+      position: relative;
+    }
+    #mic-btn:hover { background: #c1121f; transform: scale(1.05); }
+    #mic-btn:active { transform: scale(.95); }
+    #mic-btn.recording {
+      background: #22c55e;
+      box-shadow: 0 0 0 4px rgba(34,197,94,.3);
+      animation: mic-pulse 1.2s infinite;
+    }
+    @keyframes mic-pulse {
+      0%,100% { box-shadow: 0 0 0 4px rgba(34,197,94,.3); }
+      50%     { box-shadow: 0 0 0 10px rgba(34,197,94,.08); }
+    }
+    #mic-btn:disabled { background: #aaa; cursor: not-allowed; box-shadow: none; animation: none; }
+
+    /* hide text input in voice mode */
+    body.voice-mode #user-input { display: none; }
+    body.voice-mode #send-btn   { display: none; }
+    body.voice-mode #mic-btn    { width: 56px; height: 56px; font-size: 1.5rem; }
+
+    /* hide mic in text mode */
+    body.text-mode #mic-btn { display: none; }
+
+    /* live transcript preview */
+    #live-transcript {
+      flex: 1;
+      font-size: .9rem;
+      color: #999;
+      font-style: italic;
+      padding: 0 12px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      display: none;
+    }
+    body.voice-mode #live-transcript { display: block; }
 
     /* ── Receipt panel ── */
     #receipt-panel {
@@ -223,12 +333,18 @@
     }
   </style>
 </head>
-<body>
+<body class="voice-mode">
 
 <header>
-  <span>🍕</span>
+  <span class="logo">🍕</span>
   <h1>PizzaVoice</h1>
-  <div class="status-dot" title="Online"></div>
+  <div class="header-right">
+    <span id="voice-status"></span>
+    <button id="mode-toggle" class="voice-active" title="Switch between Voice and Text mode">
+      <span class="icon">🎙️</span> <span id="mode-label">Voice</span>
+    </button>
+    <div class="status-dot" title="Online"></div>
+  </div>
 </header>
 
 <main>
@@ -236,7 +352,9 @@
   <section id="chat-panel">
     <div id="messages"></div>
     <div id="input-bar">
-      <input id="user-input" type="text" placeholder="Say anything — Pino is listening…" autocomplete="off"/>
+      <input id="user-input" type="text" placeholder="Type your message…" autocomplete="off"/>
+      <span id="live-transcript">Tap the mic &amp; speak…</span>
+      <button id="mic-btn" title="Hold or tap to speak">🎤</button>
       <button id="send-btn">Send</button>
     </div>
   </section>
@@ -246,20 +364,189 @@
 </main>
 
 <script>
-  const messagesEl  = document.getElementById("messages");
-  const inputEl     = document.getElementById("user-input");
-  const sendBtn     = document.getElementById("send-btn");
-  const receiptEl   = document.getElementById("receipt-panel");
+  const messagesEl    = document.getElementById("messages");
+  const inputEl       = document.getElementById("user-input");
+  const sendBtn       = document.getElementById("send-btn");
+  const receiptEl     = document.getElementById("receipt-panel");
+  const micBtn        = document.getElementById("mic-btn");
+  const modeToggle    = document.getElementById("mode-toggle");
+  const modeLabel     = document.getElementById("mode-label");
+  const voiceStatus   = document.getElementById("voice-status");
+  const liveTranscript = document.getElementById("live-transcript");
 
-  // Conversation history sent to backend
   let history = [];
+  let voiceMode = true;               // voice is DEFAULT
 
-  // ── Render a chat bubble ──────────────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
+  // TEXT-TO-SPEECH  (female voice)
+  // ═══════════════════════════════════════════════════════════════════════════
+  let femaleVoice = null;
+  let ttsEnabled  = true;             // auto-speak bot replies when voice mode
+
+  function loadVoices() {
+    const voices = speechSynthesis.getVoices();
+    if (!voices.length) return;
+
+    // Preference order:  English female voices
+    const prefs = [
+      v => /zira/i.test(v.name),                                     // Windows "Zira"
+      v => /samantha/i.test(v.name),                                  // macOS "Samantha"
+      v => /google.*female/i.test(v.name),                            // Chrome "Google UK English Female"
+      v => /google.*uk.*english/i.test(v.name) && /female/i.test(v.name),
+      v => /female/i.test(v.name) && /en/i.test(v.lang),
+      v => /woman/i.test(v.name)  && /en/i.test(v.lang),
+      v => (/en[-_]/i.test(v.lang)) && !/(male|david|mark|james|daniel|guy|richard)/i.test(v.name),
+      v => /en[-_]/i.test(v.lang),
+    ];
+    for (const test of prefs) {
+      const match = voices.find(test);
+      if (match) { femaleVoice = match; break; }
+    }
+    if (!femaleVoice) femaleVoice = voices[0];
+    console.log("[TTS] Selected voice:", femaleVoice?.name);
+  }
+  speechSynthesis.addEventListener("voiceschanged", loadVoices);
+  loadVoices();
+
+  function speak(text) {
+    if (!ttsEnabled || !voiceMode) return;
+    speechSynthesis.cancel();                      // stop any ongoing speech
+    const clean = text.replace(/[#*_~`>]/g, "")    // strip markdown-ish chars
+                      .replace(/\bhttps?:\/\/\S+/g, "link");
+    const utt   = new SpeechSynthesisUtterance(clean);
+    if (femaleVoice) utt.voice = femaleVoice;
+    utt.rate  = 1.02;
+    utt.pitch = 1.12;                             // slightly higher = more feminine
+    utt.lang  = "en-US";
+    utt.onstart = () => setVoiceStatus("speaking", "🔊 Speaking…");
+    utt.onend   = () => setVoiceStatus("idle");
+    utt.onerror = () => setVoiceStatus("idle");
+    speechSynthesis.speak(utt);
+  }
+
+  function stopSpeaking() { speechSynthesis.cancel(); setVoiceStatus("idle"); }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // SPEECH-TO-TEXT  (Web Speech API)
+  // ═══════════════════════════════════════════════════════════════════════════
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let recognition = null;
+  let isRecording  = false;
+
+  if (SpeechRecognition) {
+    recognition = new SpeechRecognition();
+    recognition.continuous   = false;
+    recognition.interimResults = true;
+    recognition.lang         = "en-US";
+
+    recognition.onresult = (e) => {
+      let interim = "", final_ = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const t = e.results[i][0].transcript;
+        if (e.results[i].isFinal) final_ += t;
+        else                      interim += t;
+      }
+      liveTranscript.textContent = interim || final_ || "Listening…";
+      if (final_) {
+        stopRecording();
+        inputEl.value = final_;
+        send();
+      }
+    };
+    recognition.onerror = (e) => {
+      console.warn("[STT] Error:", e.error);
+      stopRecording();
+      if (e.error === "not-allowed") {
+        addMsg("bot", "⚠️ Microphone access was denied.\nPlease allow mic permission or switch to Text mode.");
+      }
+    };
+    recognition.onend = () => { stopRecording(); };
+  }
+
+  function startRecording() {
+    if (!recognition) {
+      addMsg("bot", "⚠️ Your browser doesn't support speech recognition.\nPlease switch to Text mode.");
+      return;
+    }
+    stopSpeaking();                               // don't listen to yourself
+    isRecording = true;
+    micBtn.classList.add("recording");
+    liveTranscript.textContent = "Listening…";
+    setVoiceStatus("listening", "🎙️ Listening…");
+    try { recognition.start(); } catch(_) {}      // ignore "already started"
+  }
+
+  function stopRecording() {
+    isRecording = false;
+    micBtn.classList.remove("recording");
+    liveTranscript.textContent = "Tap the mic & speak…";
+    setVoiceStatus("idle");
+    try { recognition.stop(); } catch(_) {}
+  }
+
+  // Mic button: tap to toggle
+  micBtn.addEventListener("click", () => {
+    if (isRecording) stopRecording();
+    else             startRecording();
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // MODE TOGGLE  (Voice ↔ Text)
+  // ═══════════════════════════════════════════════════════════════════════════
+  function setMode(mode) {
+    voiceMode = mode === "voice";
+    document.body.className = voiceMode ? "voice-mode" : "text-mode";
+    modeLabel.textContent   = voiceMode ? "Voice" : "Text";
+    modeToggle.querySelector(".icon").textContent = voiceMode ? "🎙️" : "⌨️";
+    modeToggle.classList.toggle("voice-active", voiceMode);
+    if (!voiceMode) {
+      stopRecording();
+      stopSpeaking();
+      setVoiceStatus("idle");
+      inputEl.focus();
+    }
+  }
+
+  modeToggle.addEventListener("click", () => {
+    setMode(voiceMode ? "text" : "voice");
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // VOICE STATUS BADGE
+  // ═══════════════════════════════════════════════════════════════════════════
+  function setVoiceStatus(state, label) {
+    voiceStatus.className = "";
+    voiceStatus.style.display = "none";
+    if (state === "listening") {
+      voiceStatus.textContent = label || "🎙️ Listening…";
+      voiceStatus.className = "listening";
+      voiceStatus.style.display = "inline-block";
+    } else if (state === "speaking") {
+      voiceStatus.textContent = label || "🔊 Speaking…";
+      voiceStatus.className = "speaking";
+      voiceStatus.style.display = "inline-block";
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // CHAT RENDERING
+  // ═══════════════════════════════════════════════════════════════════════════
   function addMsg(role, text) {
     const div = document.createElement("div");
     div.className = `msg ${role}`;
-    if (role === "bot") div.innerHTML = `<span class="avatar">👨‍🍳</span>${escHtml(text)}`;
-    else                div.textContent = text;
+    if (role === "bot") {
+      // Add a small speaker button so user can re-play any bot message
+      div.innerHTML = `<span class="avatar">👩‍🍳</span>${escHtml(text)}<button class="speak-btn" title="Read aloud">🔊</button>`;
+      div.querySelector(".speak-btn").addEventListener("click", () => {
+        ttsEnabled = true;
+        const wasVoice = voiceMode;
+        voiceMode = true;                // temporarily enable for this click
+        speak(text);
+        voiceMode = wasVoice;
+      });
+    } else {
+      div.textContent = text;
+    }
     messagesEl.appendChild(div);
     messagesEl.scrollTop = messagesEl.scrollHeight;
     return div;
@@ -358,16 +645,18 @@
     </div>`;
   }
 
-  // ── Send message ──────────────────────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
+  // SEND MESSAGE  (works for both voice & text input)
+  // ═══════════════════════════════════════════════════════════════════════════
   async function send() {
     const text = inputEl.value.trim();
     if (!text) return;
 
     inputEl.value = "";
     sendBtn.disabled = true;
+    micBtn.disabled  = true;
     addMsg("user", text);
 
-    // push to history
     history.push({ role: "user", content: text });
 
     showTyping();
@@ -383,6 +672,7 @@
       if (data.reply) {
         addMsg("bot", data.reply);
         history.push({ role: "assistant", content: data.reply });
+        speak(data.reply);                        // 🔊 auto-read in voice mode
       }
       if (data.receipt) renderReceipt(data.receipt);
 
@@ -391,7 +681,8 @@
       addMsg("bot", "⚠️ Connection error — please try again.");
     }
     sendBtn.disabled = false;
-    inputEl.focus();
+    micBtn.disabled  = false;
+    if (!voiceMode) inputEl.focus();
   }
 
   sendBtn.addEventListener("click", send);
@@ -399,7 +690,10 @@
 
   // ── Opening message ───────────────────────────────────────────────────────
   window.addEventListener("DOMContentLoaded", () => {
-    addMsg("bot", "Ciao! 👋 Welcome to PizzaVoice! I'm Pino, your pizza waiter tonight.\nWhat can I build for you? 🍕");
+    const greeting = "Ciao! 👋 Welcome to PizzaVoice! I'm Pino, your pizza waiter tonight.\nTap the mic and tell me what you'd like! 🍕🎙️";
+    addMsg("bot", greeting);
+    // Small delay so voices are loaded before first speech
+    setTimeout(() => speak(greeting), 600);
   });
 </script>
 </body>
