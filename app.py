@@ -119,12 +119,18 @@ def _build_prompt(history):
 
 
 def chat_with_llm(history):
+    import sys
+
     # HF Spaces auto-injects HUGGING_FACE_HUB_TOKEN; also accept manual HF_TOKEN secret
-    token = (
-        os.environ.get("HF_TOKEN") or
-        os.environ.get("HUGGING_FACE_HUB_TOKEN") or
-        ""
-    ).strip()
+    hf_token_raw   = os.environ.get("HF_TOKEN") or ""
+    hfhub_token_raw = os.environ.get("HUGGING_FACE_HUB_TOKEN") or ""
+    token = (hf_token_raw or hfhub_token_raw).strip()
+
+    print(f"[DEBUG] HF_TOKEN present: {bool(hf_token_raw.strip())}", flush=True)
+    print(f"[DEBUG] HUGGING_FACE_HUB_TOKEN present: {bool(hfhub_token_raw.strip())}", flush=True)
+    print(f"[DEBUG] Token resolved: {bool(token)} (len={len(token)})", flush=True)
+    sys.stdout.flush()
+
     if not token:
         return "⚠️ No HuggingFace token found. Add HF_TOKEN in Space Settings → Secrets."
 
@@ -134,6 +140,7 @@ def chat_with_llm(history):
     last_err = "Unknown error"
 
     for model_id, supports_chat in MODELS:
+        print(f"[DEBUG] Trying model: {model_id} (chat={supports_chat})", flush=True)
         try:
             if supports_chat:
                 resp = client.chat_completion(
@@ -142,7 +149,9 @@ def chat_with_llm(history):
                     max_tokens=350,
                     temperature=0.75,
                 )
-                return resp.choices[0].message.content.strip()
+                result = resp.choices[0].message.content.strip()
+                print(f"[DEBUG] ✅ Success with {model_id} — response length: {len(result)}", flush=True)
+                return result
             else:
                 prompt = _build_prompt(trimmed)
                 resp   = client.text_generation(
@@ -152,12 +161,16 @@ def chat_with_llm(history):
                     temperature=0.75,
                     stop_sequences=["User:", "[SYSTEM]"],
                 )
-                return resp.split("User:")[0].strip()
+                result = resp.split("User:")[0].strip()
+                print(f"[DEBUG] ✅ Success with {model_id} — response length: {len(result)}", flush=True)
+                return result
 
         except Exception as e:
             last_err = str(e)
+            print(f"[DEBUG] ❌ Failed {model_id}: {last_err[:300]}", flush=True)
             continue
 
+    print(f"[DEBUG] 🚨 All models exhausted. Last error: {last_err[:300]}", flush=True)
     return f"⚠️ All models failed. Last error: {last_err[:200]}"
 
 
