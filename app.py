@@ -5,7 +5,7 @@ from datetime import datetime
 
 app = Flask(__name__)
 
-# ── System prompt (flexible, LLM-driven) ──────────────────────────────────────
+# ── System prompt ──────────────────────────────────────────────────────────────
 SYSTEM = """You are Pino, a warm and witty Italian pizza waiter at PizzaVoice.
 
 YOUR PERSONALITY:
@@ -27,10 +27,10 @@ MENU:
   Cheese:  Mozzarella (free) | Cheddar/Parmesan +$0.50 | Feta/Gouda +$1.00 | Ricotta +$0.75
            Vegan/Dairy-Free +$1.50 | No Cheese (free)
   Toppings ($0.75–$3.00 each):
-    Meat:  Pepperoni, Italian Sausage, Bacon, Ham, Grilled Chicken, Ground Beef, Anchovies, Prosciutto
-    Veg:   Mushrooms, Spinach, Jalapeños, Black Olives, Bell Peppers, Red Onion, Fresh Tomatoes,
-           Fresh Basil, Roasted Garlic, Arugula, Broccoli, Sweet Corn, Artichoke Hearts,
-           Avocado, Zucchini, Sun-Dried Tomatoes, Pineapple
+    Meat:    Pepperoni, Italian Sausage, Bacon, Ham, Grilled Chicken, Ground Beef, Anchovies, Prosciutto
+    Veg:     Mushrooms, Spinach, Jalapeños, Black Olives, Bell Peppers, Red Onion, Fresh Tomatoes,
+             Fresh Basil, Roasted Garlic, Arugula, Broccoli, Sweet Corn, Artichoke Hearts,
+             Avocado, Zucchini, Sun-Dried Tomatoes, Pineapple
     Premium: Truffle Oil +$3.00
   Extras:  Extra Cheese +$1.50 | Extra Sauce +$0.50 | Well Done / Light Sauce (free)
 
@@ -38,13 +38,13 @@ BEHAVIOUR RULES:
 - Make smart recommendations when asked (vegetarian → pesto base, feta, spinach, mushrooms, etc.)
 - Handle vague requests gracefully ("make it spicy" → suggest jalapeños + buffalo sauce)
 - If someone wants half-and-half toppings, note it in extras as "Half [A] / Half [B]"
-- When ALL info is collected AND the customer explicitly confirms the order
+- When ALL info is collected AND the customer explicitly confirms
   (words like "yes", "perfect", "place it", "go ahead", "that's right", "sounds good"),
-  output EXACTLY the following block on its own line — no preamble, no trailing text on that line:
+  output EXACTLY this block on its own line — no extra text on that line:
   ##ORDER##{"name":"...","size":"...","crust":"...","sauce":"...","cheese":"...","toppings":["..."],"extras":["..."],"quantity":1}##END##
 - All values inside the JSON must be lowercase and match the menu items as closely as possible
 - NEVER output ##ORDER## before explicit confirmation
-- After outputting ##ORDER##, say a short warm farewell (e.g. "Grazie! Your pizza is on its way! 🍕")
+- After outputting ##ORDER##, say a short warm farewell
 """
 
 # ── Catalogue maps ─────────────────────────────────────────────────────────────
@@ -96,27 +96,26 @@ TOPPINGS_MAP = {
 }
 TAX_RATE = 0.13
 
-# ── Model list — NO license agreement required, chat_completion supported ──────
-# These models are openly accessible with any valid HF token (free tier).
-# Format: (model_id, supports_chat_completion)
+# ── Models: (model_id, supports_chat_completion) ───────────────────────────────
+# Only openly accessible models — no license agreement required
 MODELS = [
-    ("HuggingFaceH4/zephyr-7b-beta",             True),   # best quality, free
-    ("HuggingFaceH4/mistral-7b-instruct-v0.2",   True),   # HF-hosted, no gating
-    ("tiiuae/falcon-7b-instruct",                 False),  # text_generation only
-    ("bigscience/bloom-1b7",                      False),  # tiny, always works
+    ("HuggingFaceH4/zephyr-7b-beta",           True),
+    ("HuggingFaceH4/mistral-7b-instruct-v0.2", True),
+    ("tiiuae/falcon-7b-instruct",               False),
+    ("bigscience/bloom-1b7",                    False),
 ]
 
-# ── Format history as a plain text prompt (for text_generation models) ────────
+
 def _build_prompt(history):
-    """Convert message history into a single string prompt."""
+    """Plain-text prompt for models that only support text_generation."""
     parts = [f"[SYSTEM]\n{SYSTEM}\n"]
-    for msg in history[-20:]:
+    for msg in history:
         role = "User" if msg["role"] == "user" else "Pino"
         parts.append(f"{role}: {msg['content']}")
-    parts.append("Pino:")          # prime the model to continue as Pino
+    parts.append("Pino:")
     return "\n".join(parts)
 
-# ── LLM call with per-call model fallback ─────────────────────────────────────
+
 def chat_with_llm(history):
     token = os.environ.get("HF_TOKEN", "").strip()
     if not token:
@@ -138,7 +137,6 @@ def chat_with_llm(history):
                 )
                 return resp.choices[0].message.content.strip()
             else:
-                # text_generation fallback — plain prompt format
                 prompt = _build_prompt(trimmed)
                 resp   = client.text_generation(
                     prompt,
@@ -147,49 +145,41 @@ def chat_with_llm(history):
                     temperature=0.75,
                     stop_sequences=["User:", "[SYSTEM]"],
                 )
-                # strip any accidental "User:" continuation the model adds
                 return resp.split("User:")[0].strip()
 
         except Exception as e:
             last_err = str(e)
-            continue   # try next model
+            continue
 
     return f"⚠️ All models failed. Last error: {last_err[:200]}"
 
 
-# ── Order extraction — tolerant regex ────────────────────────────────────────
+# ── Order extraction ───────────────────────────────────────────────────────────
 ORDER_RE = re.compile(
     r"#{1,3}\s*ORDER\s*#{1,3}(.*?)#{1,3}\s*END\s*#{1,3}",
     re.DOTALL | re.IGNORECASE,
 )
 
 def extract_order(text):
-    """Return (clean_text, order_dict_or_None)."""
     m = ORDER_RE.search(text)
     if not m:
         return text, None
-    raw_json = m.group(1).strip()
-    # strip possible markdown code fences the model might add
-    raw_json = re.sub(r"^```[a-z]*\n?|```$", "", raw_json, flags=re.MULTILINE).strip()
+    raw = re.sub(r"^```[a-z]*\n?|```$", "", m.group(1).strip(), flags=re.MULTILINE).strip()
     try:
-        data = json.loads(raw_json)
+        data = json.loads(raw)
     except json.JSONDecodeError:
-        # last-ditch: try to find a {...} block inside
-        inner = re.search(r"\{.*\}", raw_json, re.DOTALL)
+        inner = re.search(r"\{.*\}", raw, re.DOTALL)
         if not inner:
             return ORDER_RE.sub("", text).strip(), None
         try:
             data = json.loads(inner.group())
         except Exception:
             return ORDER_RE.sub("", text).strip(), None
-
-    clean_text = ORDER_RE.sub("", text).strip()
-    return clean_text, data
+    return ORDER_RE.sub("", text).strip(), data
 
 
-# ── Receipt builder ───────────────────────────────────────────────────────────
+# ── Receipt builder ────────────────────────────────────────────────────────────
 def _pick(val, catalogue, default_key):
-    """Match val against catalogue keys (longest-match, case-insensitive)."""
     if not val:
         return catalogue[default_key]
     v = val.lower().strip()
@@ -200,13 +190,12 @@ def _pick(val, catalogue, default_key):
 
 
 def build_receipt(order_data):
-    size   = _pick(order_data.get("size"),   SIZES_MAP,  "medium")
-    crust  = _pick(order_data.get("crust"),  CRUSTS_MAP, "hand tossed")
-    sauce  = _pick(order_data.get("sauce"),  SAUCES_MAP, "tomato")
-    cheese = _pick(order_data.get("cheese"), CHEESES_MAP,"mozzarella")
+    size   = _pick(order_data.get("size"),   SIZES_MAP,   "medium")
+    crust  = _pick(order_data.get("crust"),  CRUSTS_MAP,  "hand tossed")
+    sauce  = _pick(order_data.get("sauce"),  SAUCES_MAP,  "tomato")
+    cheese = _pick(order_data.get("cheese"), CHEESES_MAP, "mozzarella")
     qty    = max(1, int(order_data.get("quantity", 1)))
 
-    # Toppings
     raw_tops = order_data.get("toppings", [])
     if isinstance(raw_tops, str):
         raw_tops = [x.strip() for x in raw_tops.split(",")]
@@ -221,7 +210,6 @@ def build_receipt(order_data):
                     tops.append({"label": lbl, "emoji": emoji, "price": price})
                 break
 
-    # Extras
     raw_ex = order_data.get("extras", [])
     if isinstance(raw_ex, str):
         raw_ex = [x.strip() for x in raw_ex.split(",")]
@@ -231,19 +219,19 @@ def build_receipt(order_data):
         if "extra cheese" in il:
             extras_out.append({"label": "Extra Cheese", "price": 1.50})
         elif "extra sauce" in il:
-            extras_out.append({"label": "Extra Sauce", "price": 0.50})
-        elif "well done" in il:
-            extras_out.append({"label": "Well Done", "price": 0.00})
+            extras_out.append({"label": "Extra Sauce",  "price": 0.50})
+        elif "well done"   in il:
+            extras_out.append({"label": "Well Done",    "price": 0.00})
         elif "light sauce" in il:
-            extras_out.append({"label": "Light Sauce", "price": 0.00})
-        elif item.strip():  # keep free-text extras (e.g. half-and-half note)
+            extras_out.append({"label": "Light Sauce",  "price": 0.00})
+        elif item.strip():
             extras_out.append({"label": item.strip().title(), "price": 0.00})
 
-    unit    = (size[1] + crust[1] + sauce[1] + cheese[1]
-               + sum(t["price"] for t in tops)
-               + sum(e["price"] for e in extras_out))
-    sub     = unit * qty
-    tax     = sub * TAX_RATE
+    unit = (size[1] + crust[1] + sauce[1] + cheese[1]
+            + sum(t["price"] for t in tops)
+            + sum(e["price"] for e in extras_out))
+    sub  = unit * qty
+    tax  = sub * TAX_RATE
 
     return {
         "order": {
@@ -259,15 +247,15 @@ def build_receipt(order_data):
         "pricing": {
             "unit":     round(unit, 2),
             "quantity": qty,
-            "subtotal": round(sub, 2),
-            "tax":      round(tax, 2),
+            "subtotal": round(sub,  2),
+            "tax":      round(tax,  2),
             "total":    round(sub + tax, 2),
             "breakdown": {
-                "base":     round(size[1], 2),
+                "base":     round(size[1],  2),
                 "crust":    round(crust[1], 2),
                 "sauce":    round(sauce[1], 2),
                 "cheese":   round(cheese[1], 2),
-                "toppings": round(sum(t["price"] for t in tops), 2),
+                "toppings": round(sum(t["price"] for t in tops),      2),
                 "extras":   round(sum(e["price"] for e in extras_out), 2),
             },
         },
@@ -276,7 +264,7 @@ def build_receipt(order_data):
     }
 
 
-# ── Routes ────────────────────────────────────────────────────────────────────
+# ── Routes ─────────────────────────────────────────────────────────────────────
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -284,11 +272,11 @@ def index():
 
 @app.route("/chat", methods=["POST"])
 def chat():
-    data    = request.get_json(force=True)
-    history = data.get("history", [])
-    reply   = chat_with_llm(history)
+    data        = request.get_json(force=True)
+    history     = data.get("history", [])
+    reply       = chat_with_llm(history)
     reply, order_data = extract_order(reply)
-    receipt = build_receipt(order_data) if order_data else None
+    receipt     = build_receipt(order_data) if order_data else None
     return jsonify({"reply": reply, "receipt": receipt})
 
 
