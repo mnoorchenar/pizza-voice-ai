@@ -1,288 +1,184 @@
-﻿from flask import Flask, render_template, request, jsonify, session
-import uuid, re, os
+﻿from flask import Flask, render_template, request, jsonify
+from huggingface_hub import InferenceClient
+import os, re, json, uuid
 from datetime import datetime
-from catalogue import SIZES, CRUSTS, SAUCES, CHEESES, TOPPINGS, EXTRAS, TAX_RATE
-import secrets
 
-app = Flask(__name__)
-app.secret_key = secrets.token_hex(32)
+app   = Flask(__name__)
+TOKEN = os.environ.get("HF_TOKEN", "")
 
-# ── Conversation state store (in-memory, per session) ────────────────────────
-_sessions = {}
-
-# ── Conversational bot replies ────────────────────────────────────────────────
-BOT = {
-    "welcome":    "👋 Hey there! Welcome to PizzaVoice — I'm Pino, your pizza waiter! What's your name?",
-    "size":       "Great to meet you, {name}! 🍕 Let's build your perfect pizza. What size would you like?\n👉 Personal, Small, Medium, Large, or XL?",
-    "crust":      "Excellent choice! 🥨 What crust are you feeling today?\n👉 Thin, Thick, Hand Tossed, Stuffed (+$2.50), Cauliflower (+$3.00), or Gluten-Free (+$2.50)?",
-    "sauce":      "Love it! 🥫 Now, which sauce would you like?\n👉 Tomato, Marinara, BBQ, Alfredo, Pesto, Ranch, Buffalo, or Garlic Butter?",
-    "cheese":     "Delicious! 🧀 What cheese are you going with?\n👉 Mozzarella, Cheddar, Parmesan, Feta, Gouda, Ricotta, or No Cheese?",
-    "toppings":   "Amazing! 🍄 What toppings would you like? You can name as many as you want!\n👉 e.g. pepperoni, mushrooms, jalapeños, chicken, bacon…",
-    "no_toppings":"No worries — keeping it classic! 😄",
-    "extras":     "Nice picks! ⭐ Any extras?\n👉 Extra Cheese (+$1.50), Extra Sauce (+$0.50), Well Done, Light Sauce — or just say 'none'!",
-    "quantity":   "Almost there! 🔢 How many pizzas would you like?",
-    "confirm":    "Perfect! Let me read that back to you, {name}:\n\n🍕 {qty}× {size} pizza\n🥨 {crust} crust\n🥫 {sauce} sauce\n🧀 {cheese}\n🍄 Toppings: {toppings}\n⭐ Extras: {extras}\n\n💰 Estimated total: {total}\n\nShall I place this order? Say **yes** to confirm or **no** to start over!",
-    "placed":     "🎉 Order placed, {name}! Your pizza is being made with love. Here's your receipt below! 🧾",
-    "restart":    "No problem! Let's start fresh. 😊 What's your name?",
-    "not_understood": "Sorry, I didn't catch that! Could you say that again? 😊",
-}
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-_QTY_WORDS = {"one":1,"two":2,"three":3,"four":4,"five":5,
-              "six":6,"seven":7,"eight":8,"nine":9,"ten":10}
-
-def pick(text, catalogue):
-    t = text.lower()
-    for k in sorted(catalogue, key=len, reverse=True):
-        if k in t:
-            return k
+# ── LLM client ────────────────────────────────────────────────────────────────
+def get_client():
+    if not TOKEN:
+        return None
+    for model in [
+        "mistralai/Mistral-7B-Instruct-v0.3",
+        "HuggingFaceH4/zephyr-7b-beta",
+        "microsoft/Phi-3-mini-4k-instruct",
+    ]:
+        try:
+            return InferenceClient(model=model, token=TOKEN)
+        except Exception:
+            continue
     return None
 
-def extract_name(text):
-    t = text.strip()
-    # Remove common phrases
-    for p in ["my name is","i'm","i am","call me","it's","its","name's","name is"]:
-        t = re.sub(rf"\b{p}\b", "", t, flags=re.I).strip()
-    # Take first 1-2 words, capitalised
-    words = [w.capitalize() for w in t.split() if len(w) > 1]
-    return " ".join(words[:2]) if words else None
+CLIENT = get_client()
 
-def extract_qty(text):
-    t = text.lower()
-    for w, n in _QTY_WORDS.items():
-        if re.search(rf"\b{w}\b", t):
-            return n
-    m = re.search(r"\b([1-9])\b", t)
-    return int(m.group(1)) if m else 1
+# ── System prompt — Pino the waiter ───────────────────────────────────────────
+SYSTEM = """You are Pino, a warm and friendly Italian pizza waiter at PizzaVoice restaurant.
+Your job is to have a NATURAL conversation with the customer to take their pizza order.
 
-def extract_toppings(text):
-    t = text.lower()
-    seen, result = set(), []
-    for k in sorted(TOPPINGS, key=len, reverse=True):
-        if k in t:
-            lbl, emoji, price = TOPPINGS[k]
-            if lbl not in seen:
-                seen.add(lbl)
-                result.append({"label": lbl, "emoji": emoji, "price": price})
-    return result
+MENU:
+Sizes:   Personal $7.99 | Small $9.99 | Medium $13.99 | Large $16.99 | XL $19.99
+Crusts:  Thin, Thick, Hand Tossed (free) | Stuffed +$2.50 | Cauliflower +$3.00 | Gluten-Free +$2.50
+Sauces:  Tomato, Marinara, BBQ, Ranch, Buffalo, Garlic Butter (free) | Alfredo/Pesto +$0.50
+Cheese:  Mozzarella (free) | Cheddar/Parmesan +$0.50 | Feta/Gouda +$1.00 | Ricotta +$0.75 | No Cheese
+Toppings (+$0.75-$3.00): Pepperoni, Mushrooms, Spinach, Jalapeños, Black Olives, Bell Peppers,
+  Red Onion, Grilled Chicken, Ground Beef, Italian Sausage, Bacon, Ham, Pineapple,
+  Fresh Tomatoes, Fresh Basil, Roasted Garlic, Arugula, Broccoli, Sweet Corn,
+  Artichoke Hearts, Anchovies, Avocado, Prosciutto, Truffle Oil, Zucchini, Sun-Dried Tomatoes
+Extras:  Extra Cheese +$1.50 | Extra Sauce +$0.50 | Well Done / Light Sauce (free)
 
-def extract_extras(text):
-    t = text.lower()
-    seen, result = set(), []
-    for k in sorted(EXTRAS, key=len, reverse=True):
-        if k in t:
-            lbl, price = EXTRAS[k]
-            if lbl not in seen:
-                seen.add(lbl)
-                result.append({"label": lbl, "price": price})
-    return result
+RULES:
+- Be warm, short, and conversational — like a real waiter talking out loud.
+- Make recommendations when asked (e.g. vegetarian → suggest pesto, spinach, feta, mushrooms).
+- Ask only ONE question at a time — never bombard the customer.
+- You MUST collect: customer name, size, crust, sauce, cheese, toppings (or none), quantity.
+- When you have all details AND the customer has confirmed, output their order like this on its own line:
+  ##ORDER##{"name":"...","size":"...","crust":"...","sauce":"...","cheese":"...","toppings":["..."],"extras":["..."],"quantity":1}##END##
+- Keep all topping/size/etc values lowercase and matching the menu exactly.
+- Do NOT output ##ORDER## until the customer explicitly confirms (yes/correct/place it/etc).
+- After outputting ##ORDER##, say a warm goodbye line."""
 
-def is_yes(text):
-    return bool(re.search(r"\b(yes|yeah|yep|sure|correct|confirm|place|ok|okay|yup|absolutely)\b", text.lower()))
+# ── Fallback rule-based extractor (if no HF_TOKEN) ────────────────────────────
+SIZES_MAP    = {"personal":("Personal 6\"",7.99),"small":("Small 8\"",9.99),"medium":("Medium 12\"",13.99),"large":("Large 14\"",16.99),"extra large":("XL 16\"",19.99),"xl":("XL 16\"",19.99)}
+CRUSTS_MAP   = {"thin":("Thin Crust",0),"thick":("Thick Crust",0),"hand tossed":("Hand Tossed",0),"stuffed":("Stuffed Crust",2.50),"cauliflower":("Cauliflower Crust",3.00),"gluten free":("Gluten-Free",2.50),"gluten-free":("Gluten-Free",2.50)}
+SAUCES_MAP   = {"tomato":("Classic Tomato",0),"marinara":("Marinara",0),"bbq":("BBQ",0),"ranch":("Ranch",0),"buffalo":("Buffalo",0),"garlic butter":("Garlic Butter",0),"alfredo":("Alfredo",0.50),"pesto":("Basil Pesto",0.50)}
+CHEESES_MAP  = {"mozzarella":("Mozzarella",0),"cheddar":("Cheddar",0.50),"parmesan":("Parmesan",0.50),"feta":("Feta",1.00),"gouda":("Gouda",1.00),"ricotta":("Ricotta",0.75),"no cheese":("No Cheese",0),"vegan":("Vegan Cheese",1.50)}
+TOPPINGS_MAP = {
+    "pepperoni":("Pepperoni","🍕",1.50),"mushrooms":("Mushrooms","🍄",1.00),"mushroom":("Mushrooms","🍄",1.00),
+    "spinach":("Spinach","🥬",1.00),"jalapeños":("Jalapeños","🌶️",0.75),"jalapenos":("Jalapeños","🌶️",0.75),
+    "olives":("Black Olives","🫒",1.00),"bell peppers":("Bell Peppers","🫑",1.00),
+    "red onion":("Red Onion","🧅",0.75),"onion":("Red Onion","🧅",0.75),
+    "chicken":("Grilled Chicken","🍗",2.00),"grilled chicken":("Grilled Chicken","🍗",2.00),
+    "beef":("Ground Beef","🥩",2.00),"sausage":("Italian Sausage","🌭",1.75),
+    "bacon":("Bacon","🥓",1.75),"ham":("Ham","🍖",1.50),"pineapple":("Pineapple","🍍",1.00),
+    "tomatoes":("Fresh Tomatoes","🍅",1.00),"basil":("Fresh Basil","🌿",0.75),
+    "garlic":("Roasted Garlic","🧄",0.75),"arugula":("Arugula","🥗",1.00),
+    "broccoli":("Broccoli","🥦",1.00),"corn":("Sweet Corn","🌽",0.75),
+    "artichoke":("Artichoke Hearts","🌱",1.50),"anchovies":("Anchovies","🐟",1.50),
+    "avocado":("Avocado","🥑",1.50),"prosciutto":("Prosciutto","🍖",2.50),
+    "truffle":("Truffle Oil","✨",3.00),"zucchini":("Zucchini","🥒",1.00),
+    "feta":("Feta Crumbles","🧀",1.25),"sun dried tomato":("Sun-Dried Tomatoes","☀️",1.25),
+}
+TAX = 0.13
 
-def is_no(text):
-    return bool(re.search(r"\b(no|nope|restart|start over|cancel|nah)\b", text.lower()))
 
-def is_none(text):
-    return bool(re.search(r"\b(none|nothing|no|skip|plain|that'?s? ?(it|all))\b", text.lower()))
+def build_receipt(order_data: dict) -> dict:
+    """Turn raw LLM JSON into a full priced receipt."""
+    def pick(val, catalogue, default_key):
+        if not val: return catalogue[default_key]
+        v = val.lower().strip()
+        for k in sorted(catalogue, key=len, reverse=True):
+            if k in v or v in k:
+                return catalogue[k]
+        return catalogue[default_key]
 
-def calc_price(order):
-    q  = order["quantity"]
-    b  = SIZES[order["size"]][1]
-    cr = CRUSTS[order["crust"]][1]
-    sa = SAUCES[order["sauce"]][1]
-    ch = CHEESES[order["cheese"]][1]
-    tp = sum(x["price"] for x in order["toppings"])
-    ex = sum(x["price"] for x in order["extras"])
-    unit = b + cr + sa + ch + tp + ex
-    sub  = unit * q
-    tax  = sub * TAX_RATE
+    size   = pick(order_data.get("size",""),   SIZES_MAP,  "medium")
+    crust  = pick(order_data.get("crust",""),  CRUSTS_MAP, "hand tossed")
+    sauce  = pick(order_data.get("sauce",""),  SAUCES_MAP, "tomato")
+    cheese = pick(order_data.get("cheese",""), CHEESES_MAP,"mozzarella")
+    qty    = max(1, int(order_data.get("quantity", 1)))
+
+    raw_tops = order_data.get("toppings", [])
+    if isinstance(raw_tops, str):
+        raw_tops = [x.strip() for x in raw_tops.split(",")]
+    seen, tops = set(), []
+    for item in raw_tops:
+        item = item.lower().strip()
+        for k in sorted(TOPPINGS_MAP, key=len, reverse=True):
+            if k in item:
+                lbl, emoji, price = TOPPINGS_MAP[k]
+                if lbl not in seen:
+                    seen.add(lbl)
+                    tops.append({"label": lbl, "emoji": emoji, "price": price})
+                break
+
+    raw_ex = order_data.get("extras", [])
+    if isinstance(raw_ex, str):
+        raw_ex = [x.strip() for x in raw_ex.split(",")]
+    extras_out = []
+    for item in raw_ex:
+        il = item.lower()
+        if "extra cheese" in il: extras_out.append({"label":"Extra Cheese","price":1.50})
+        elif "extra sauce" in il: extras_out.append({"label":"Extra Sauce","price":0.50})
+        elif "well done" in il:   extras_out.append({"label":"Well Done","price":0.00})
+
+    unit = size[1] + crust[1] + sauce[1] + cheese[1] + sum(t["price"] for t in tops) + sum(e["price"] for e in extras_out)
+    sub  = unit * qty
+    tax  = sub * TAX
     return {
-        "unit": round(unit, 2), "quantity": q,
-        "subtotal": round(sub, 2), "tax": round(tax, 2),
-        "total": round(sub + tax, 2),
-        "breakdown": {"base": round(b,2), "crust": round(cr,2),
-                      "sauce": round(sa,2), "cheese": round(ch,2),
-                      "toppings": round(tp,2), "extras": round(ex,2)},
+        "order": {
+            "name":     order_data.get("name", "Friend"),
+            "size":     {"label": size[0],   "price": size[1]},
+            "crust":    {"label": crust[0],  "price": crust[1]},
+            "sauce":    {"label": sauce[0],  "price": sauce[1]},
+            "cheese":   {"label": cheese[0], "price": cheese[1]},
+            "toppings": tops,
+            "extras":   extras_out,
+            "quantity": qty,
+        },
+        "pricing": {
+            "unit": round(unit,2), "quantity": qty,
+            "subtotal": round(sub,2), "tax": round(tax,2),
+            "total": round(sub+tax, 2),
+            "breakdown": {"base":round(size[1],2),"crust":round(crust[1],2),
+                          "sauce":round(sauce[1],2),"cheese":round(cheese[1],2),
+                          "toppings":round(sum(t["price"] for t in tops),2),
+                          "extras":round(sum(e["price"] for e in extras_out),2)},
+        },
+        "order_id":  str(uuid.uuid4())[:8].upper(),
+        "timestamp": datetime.now().strftime("%B %d, %Y  •  %I:%M %p"),
     }
 
-def new_order():
-    return {"name": None, "size": None, "crust": None, "sauce": None,
-            "cheese": None, "toppings": [], "extras": [], "quantity": 1}
 
-# ── Main chat endpoint ────────────────────────────────────────────────────────
-@app.route("/chat", methods=["POST"])
-def chat():
-    data    = request.get_json(force=True)
-    sid     = data.get("session_id")
-    user_msg= data.get("message", "").strip()
-
-    # Get or create session
-    if sid not in _sessions:
-        _sessions[sid] = {"state": "welcome", "order": new_order()}
-    s = _sessions[sid]
-    state = s["state"]
-    order = s["order"]
-
-    reply    = ""
-    receipt  = None
-    advance  = True
-
-    # ── State machine ─────────────────────────────────────────────────────────
-    if state == "welcome":
-        reply = BOT["welcome"]
-        s["state"] = "name"
-        advance = False
-
-    elif state == "name":
-        name = extract_name(user_msg)
-        if not name:
-            reply = "I didn't catch your name — could you tell me again? 😊"
-            advance = False
-        else:
-            order["name"] = name
-            reply = BOT["size"].format(name=name)
-            s["state"] = "size"
-            advance = False
-
-    elif state == "size":
-        key = pick(user_msg, SIZES)
-        if not key:
-            reply = "Hmm, I didn't get that size! Try: Personal, Small, Medium, Large, or XL 😊"
-            advance = False
-        else:
-            order["size"] = key
-            reply = BOT["crust"]
-            s["state"] = "crust"
-            advance = False
-
-    elif state == "crust":
-        key = pick(user_msg, CRUSTS)
-        if not key:
-            reply = "Sorry, didn't catch the crust! Try: Thin, Thick, Hand Tossed, Stuffed, Cauliflower, or Gluten-Free 😊"
-            advance = False
-        else:
-            order["crust"] = key
-            reply = BOT["sauce"]
-            s["state"] = "sauce"
-            advance = False
-
-    elif state == "sauce":
-        key = pick(user_msg, SAUCES)
-        if not key:
-            reply = "Didn't get that sauce! Try: Tomato, Marinara, BBQ, Alfredo, Pesto, Ranch, Buffalo, or Garlic Butter 😊"
-            advance = False
-        else:
-            order["sauce"] = key
-            reply = BOT["cheese"]
-            s["state"] = "cheese"
-            advance = False
-
-    elif state == "cheese":
-        key = pick(user_msg, CHEESES)
-        if not key:
-            reply = "Didn't catch that! Try: Mozzarella, Cheddar, Parmesan, Feta, Gouda, Ricotta, or No Cheese 😊"
-            advance = False
-        else:
-            order["cheese"] = key
-            reply = BOT["toppings"]
-            s["state"] = "toppings"
-            advance = False
-
-    elif state == "toppings":
-        if is_none(user_msg):
-            order["toppings"] = []
-            reply = BOT["no_toppings"] + "\n\n" + BOT["extras"]
-        else:
-            tops = extract_toppings(user_msg)
-            if not tops:
-                reply = "I couldn't find any toppings I know! Try: pepperoni, mushrooms, chicken, bacon, jalapeños… or say 'none'!"
-                advance = False
-            else:
-                order["toppings"] = tops
-                names = ", ".join(t["label"] for t in tops)
-                reply = f"Great choices — {names}! 😋\n\n" + BOT["extras"]
-        if advance:
-            s["state"] = "extras"
-            advance = False
-
-    elif state == "extras":
-        if is_none(user_msg):
-            order["extras"] = []
-        else:
-            order["extras"] = extract_extras(user_msg)
-        reply = BOT["quantity"]
-        s["state"] = "quantity"
-        advance = False
-
-    elif state == "quantity":
-        qty = extract_qty(user_msg)
-        order["quantity"] = qty
-        pricing = calc_price(order)
-        top_str   = ", ".join(t["label"] for t in order["toppings"]) or "None"
-        extra_str = ", ".join(e["label"] for e in order["extras"]) or "None"
-        reply = BOT["confirm"].format(
-            name    = order["name"],
-            qty     = qty,
-            size    = SIZES[order["size"]][0],
-            crust   = CRUSTS[order["crust"]][0],
-            sauce   = SAUCES[order["sauce"]][0],
-            cheese  = CHEESES[order["cheese"]][0],
-            toppings= top_str,
-            extras  = extra_str,
-            total   = f"${pricing['total']:.2f}",
-        )
-        s["state"] = "confirm"
-        advance = False
-
-    elif state == "confirm":
-        if is_yes(user_msg):
-            pricing = calc_price(order)
-            receipt = {
-                "order":     {
-                    "name":     order["name"],
-                    "size":     {"label": SIZES[order["size"]][0],    "price": SIZES[order["size"]][1]},
-                    "crust":    {"label": CRUSTS[order["crust"]][0],  "price": CRUSTS[order["crust"]][1]},
-                    "sauce":    {"label": SAUCES[order["sauce"]][0],  "price": SAUCES[order["sauce"]][1]},
-                    "cheese":   {"label": CHEESES[order["cheese"]][0],"price": CHEESES[order["cheese"]][1]},
-                    "toppings": order["toppings"],
-                    "extras":   order["extras"],
-                    "quantity": order["quantity"],
-                },
-                "pricing":   pricing,
-                "order_id":  str(uuid.uuid4())[:8].upper(),
-                "timestamp": datetime.now().strftime("%B %d, %Y  •  %I:%M %p"),
-            }
-            reply = BOT["placed"].format(name=order["name"])
-            s["state"] = "done"
-            advance = False
-        elif is_no(user_msg):
-            _sessions[sid] = {"state": "name", "order": new_order()}
-            reply = BOT["restart"]
-            advance = False
-        else:
-            reply = "Just say **yes** to place the order or **no** to start over! 😊"
-            advance = False
-
-    elif state == "done":
-        # Start a new order
-        _sessions[sid] = {"state": "name", "order": new_order()}
-        reply = "Starting a new order! 🍕 What's your name?"
-        advance = False
-
-    return jsonify({"reply": reply, "receipt": receipt, "state": s["state"]})
-
-
-@app.route("/start", methods=["POST"])
-def start():
-    sid = str(uuid.uuid4())
-    _sessions[sid] = {"state": "welcome", "order": new_order()}
-    return jsonify({"session_id": sid, "reply": BOT["welcome"], "state": "name"})
+def chat_with_llm(history: list) -> str:
+    """Send full conversation to LLM and get Pino's reply."""
+    if not CLIENT:
+        return "I'm sorry, I need an HF_TOKEN to work properly! Please add it in Space Secrets. 🍕"
+    try:
+        messages = [{"role": "system", "content": SYSTEM}] + history
+        resp = CLIENT.chat_completion(messages=messages, max_tokens=300, temperature=0.7)
+        return resp.choices[0].message.content.strip()
+    except Exception as e:
+        return f"Oops, I had a little trouble there! Could you repeat that? 😅 ({str(e)[:60]})"
 
 
 @app.route("/")
 def index():
     return render_template("index.html")
+
+
+@app.route("/chat", methods=["POST"])
+def chat():
+    data    = request.get_json(force=True)
+    history = data.get("history", [])   # full [{role, content}] list from frontend
+    receipt = None
+
+    # Get LLM response
+    reply = chat_with_llm(history)
+
+    # Check if order is ready
+    m = re.search(r"##ORDER##(.*?)##END##", reply, re.DOTALL)
+    if m:
+        try:
+            order_json = json.loads(m.group(1).strip())
+            receipt    = build_receipt(order_json)
+        except Exception:
+            pass
+        # Clean the tag from the spoken reply
+        reply = re.sub(r"##ORDER##.*?##END##", "", reply, flags=re.DOTALL).strip()
+
+    return jsonify({"reply": reply, "receipt": receipt})
 
 
 if __name__ == "__main__":
