@@ -96,13 +96,25 @@ TOPPINGS_MAP = {
 }
 TAX_RATE = 0.13
 
-# ── Model list — free/accessible first ────────────────────────────────────────
+# ── Model list — NO license agreement required, chat_completion supported ──────
+# These models are openly accessible with any valid HF token (free tier).
+# Format: (model_id, supports_chat_completion)
 MODELS = [
-    "HuggingFaceH4/zephyr-7b-beta",
-    "mistralai/Mistral-7B-Instruct-v0.3",
-    "microsoft/Phi-3-mini-4k-instruct",
-    "google/gemma-1.1-2b-it",
+    ("HuggingFaceH4/zephyr-7b-beta",             True),   # best quality, free
+    ("HuggingFaceH4/mistral-7b-instruct-v0.2",   True),   # HF-hosted, no gating
+    ("tiiuae/falcon-7b-instruct",                 False),  # text_generation only
+    ("bigscience/bloom-1b7",                      False),  # tiny, always works
 ]
+
+# ── Format history as a plain text prompt (for text_generation models) ────────
+def _build_prompt(history):
+    """Convert message history into a single string prompt."""
+    parts = [f"[SYSTEM]\n{SYSTEM}\n"]
+    for msg in history[-20:]:
+        role = "User" if msg["role"] == "user" else "Pino"
+        parts.append(f"{role}: {msg['content']}")
+    parts.append("Pino:")          # prime the model to continue as Pino
+    return "\n".join(parts)
 
 # ── LLM call with per-call model fallback ─────────────────────────────────────
 def chat_with_llm(history):
@@ -110,27 +122,39 @@ def chat_with_llm(history):
     if not token:
         return "⚠️ HF_TOKEN secret is missing. Please add it in Space Settings → Secrets."
 
-    # Trim history to last 20 messages to avoid context overflow
-    trimmed = history[-20:]
+    trimmed  = history[-20:]
     messages = [{"role": "system", "content": SYSTEM}] + trimmed
-
-    client = InferenceClient(token=token)
+    client   = InferenceClient(token=token)
     last_err = "Unknown error"
 
-    for model in MODELS:
+    for model_id, supports_chat in MODELS:
         try:
-            resp = client.chat_completion(
-                model=model,
-                messages=messages,
-                max_tokens=350,
-                temperature=0.75,
-            )
-            return resp.choices[0].message.content.strip()
+            if supports_chat:
+                resp = client.chat_completion(
+                    model=model_id,
+                    messages=messages,
+                    max_tokens=350,
+                    temperature=0.75,
+                )
+                return resp.choices[0].message.content.strip()
+            else:
+                # text_generation fallback — plain prompt format
+                prompt = _build_prompt(trimmed)
+                resp   = client.text_generation(
+                    prompt,
+                    model=model_id,
+                    max_new_tokens=300,
+                    temperature=0.75,
+                    stop_sequences=["User:", "[SYSTEM]"],
+                )
+                # strip any accidental "User:" continuation the model adds
+                return resp.split("User:")[0].strip()
+
         except Exception as e:
             last_err = str(e)
             continue   # try next model
 
-    return f"⚠️ All models failed. Last error: {last_err[:150]}"
+    return f"⚠️ All models failed. Last error: {last_err[:200]}"
 
 
 # ── Order extraction — tolerant regex ────────────────────────────────────────
