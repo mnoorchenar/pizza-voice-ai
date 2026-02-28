@@ -97,9 +97,10 @@ TOPPINGS_MAP = {
 TAX_RATE = 0.13
 
 # ── Models: (model_id, supports_chat_completion) ───────────────────────────────
-# Only openly accessible models — no license agreement required
+# Ordered by reliability on HF Serverless Inference API (free tier)
 MODELS = [
     ("HuggingFaceH4/zephyr-7b-beta",           True),
+    ("mistralai/Mistral-7B-Instruct-v0.3",      True),
     ("HuggingFaceH4/mistral-7b-instruct-v0.2", True),
     ("tiiuae/falcon-7b-instruct",               False),
     ("bigscience/bloom-1b7",                    False),
@@ -117,9 +118,14 @@ def _build_prompt(history):
 
 
 def chat_with_llm(history):
-    token = os.environ.get("HF_TOKEN", "").strip()
+    # HF Spaces auto-injects HUGGING_FACE_HUB_TOKEN; also accept manual HF_TOKEN secret
+    token = (
+        os.environ.get("HF_TOKEN") or
+        os.environ.get("HUGGING_FACE_HUB_TOKEN") or
+        ""
+    ).strip()
     if not token:
-        return "⚠️ HF_TOKEN secret is missing. Please add it in Space Settings → Secrets."
+        return "⚠️ No HuggingFace token found. Add HF_TOKEN in Space Settings → Secrets."
 
     trimmed  = history[-20:]
     messages = [{"role": "system", "content": SYSTEM}] + trimmed
@@ -281,4 +287,5 @@ def chat():
 
 
 if __name__ == "__main__":
+    print(f"\n===== Application Startup at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} =====")
     app.run(host="0.0.0.0", port=7860, debug=False)
