@@ -99,11 +99,12 @@ TAX_RATE = 0.13
 # ── Models: (model_id, supports_chat_completion) ───────────────────────────────
 # Ordered by reliability on HF Serverless Inference API (free tier)
 MODELS = [
-    ("HuggingFaceH4/zephyr-7b-beta",           True),
+    ("Qwen/Qwen2.5-7B-Instruct",               True),
     ("mistralai/Mistral-7B-Instruct-v0.3",      True),
-    ("HuggingFaceH4/mistral-7b-instruct-v0.2", True),
-    ("tiiuae/falcon-7b-instruct",               False),
-    ("bigscience/bloom-1b7",                    False),
+    ("HuggingFaceH4/zephyr-7b-beta",            True),
+    ("microsoft/Phi-3.5-mini-instruct",         True),
+    ("google/gemma-2-2b-it",                    True),
+    ("meta-llama/Llama-3.2-1B-Instruct",        True),
 ]
 
 
