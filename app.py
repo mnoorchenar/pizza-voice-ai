@@ -1,12 +1,31 @@
-﻿from flask import Flask, render_template_string
+﻿from flask import Flask, render_template, request, jsonify
+import uuid
+from datetime import datetime
+from parser import parse_order, calc_price
+
 app = Flask(__name__)
-HTML = """<!DOCTYPE html>
-<html><head><title>pizza-voice-ai</title></head>
-<body style="font-family:Arial;max-width:800px;margin:50px auto;padding:20px">
-  <h1>pizza-voice-ai</h1>
-  <p>Running on port 7860.</p>
-  <span style="background:#28a745;color:#fff;padding:5px 15px;border-radius:15px">Running</span>
-</body></html>"""
-@app.route('/')
-def home(): return render_template_string(HTML)
-if __name__ == '__main__': app.run(host='0.0.0.0', port=7860)
+
+@app.route("/")
+def index():
+    return render_template("index.html")
+
+@app.route("/parse", methods=["POST"])
+def parse():
+    data = request.get_json(force=True)
+    text = data.get("text", "").strip()
+    if not text:
+        return jsonify({"error": "No text provided"}), 400
+
+    order, engine = parse_order(text)
+    pricing       = calc_price(order)
+
+    return jsonify({
+        "order":     order,
+        "pricing":   pricing,
+        "engine":    engine,
+        "order_id":  str(uuid.uuid4())[:8].upper(),
+        "timestamp": datetime.now().strftime("%B %d, %Y  •  %I:%M %p"),
+    })
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=7860, debug=False)
