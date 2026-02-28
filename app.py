@@ -1,6 +1,6 @@
-﻿from flask import Flask, render_template, request, jsonify
+﻿from flask import Flask, render_template, request, jsonify, Response
 from huggingface_hub import InferenceClient
-import os, re, json, uuid
+import os, re, json, uuid, io
 from datetime import datetime
 
 app = Flask(__name__)
@@ -22,6 +22,12 @@ Collect: customer name, size, crust, sauce, cheese, toppings (or none), drinks (
 Do NOT ask all questions at once. Ask ONE thing at a time, like a real waiter would.
 After pizza details are done, ask if they'd like any drinks.
 Finally, ask for the delivery address before confirming.
+
+RESPONSE STYLE:
+- Keep every reply SHORT — 1 to 3 sentences max. You're talking, not writing an essay.
+- Sound natural and conversational, like a real person speaking out loud.
+- Don't repeat the whole order back every turn. Just acknowledge and ask the next thing.
+- Use casual phrasing ("Got it!", "Nice choice!", "And for the crust?") not formal sentences.
 
 MENU:
   Sizes:   Personal 6" $7.99 | Small 8" $9.99 | Medium 12" $13.99 | Large 14" $16.99 | XL 16" $19.99
@@ -197,7 +203,7 @@ def chat_with_llm(history):
                 resp = client.chat_completion(
                     model=model_id,
                     messages=messages,
-                    max_tokens=350,
+                    max_tokens=180,
                     temperature=0.75,
                 )
                 result = resp.choices[0].message.content.strip()
@@ -208,7 +214,7 @@ def chat_with_llm(history):
                 resp   = client.text_generation(
                     prompt,
                     model=model_id,
-                    max_new_tokens=300,
+                    max_new_tokens=150,
                     temperature=0.75,
                     stop_sequences=["User:", "[SYSTEM]"],
                 )
@@ -359,6 +365,54 @@ def build_receipt(order_data):
         "order_id":  str(uuid.uuid4())[:8].upper(),
         "timestamp": datetime.now().strftime("%B %d, %Y  •  %I:%M %p"),
     }
+
+
+# ── TTS models (free HF Inference API — natural female voice) ──────────────────
+TTS_MODELS = [
+    "espnet/kan-bayashi_ljspeech_vits",
+    "facebook/mms-tts-eng",
+]
+
+
+@app.route("/tts", methods=["POST"])
+def tts():
+    """Generate natural-sounding speech audio from text via HF Inference API."""
+    data = request.get_json(force=True)
+    text = (data.get("text") or "").strip()
+    if not text:
+        return Response(b"", status=400)
+
+    hf_token_raw    = os.environ.get("HF_TOKEN") or ""
+    hfhub_token_raw = os.environ.get("HUGGING_FACE_HUB_TOKEN") or ""
+    token = (hf_token_raw or hfhub_token_raw).strip()
+    if not token:
+        return Response(b"", status=500)
+
+    client = InferenceClient(token=token)
+
+    # Clean text for speech
+    clean = re.sub(r"[#*_~`>]", "", text)
+    clean = re.sub(r"\bhttps?://\S+", "link", clean)
+    clean = re.sub(r"\s+", " ", clean).strip()
+    # Truncate very long text to avoid timeouts
+    if len(clean) > 500:
+        clean = clean[:500]
+
+    for model_id in TTS_MODELS:
+        try:
+            audio_bytes = client.text_to_speech(clean, model=model_id)
+            # audio_bytes is bytes (FLAC or WAV depending on model)
+            return Response(
+                audio_bytes,
+                mimetype="audio/flac",
+                headers={"Cache-Control": "no-cache"},
+            )
+        except Exception as e:
+            print(f"[TTS] ❌ {model_id}: {str(e)[:200]}", flush=True)
+            continue
+
+    # All TTS models failed — return empty so frontend falls back to browser TTS
+    return Response(b"", status=503)
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
