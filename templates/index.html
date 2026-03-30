@@ -285,14 +285,17 @@ const statusBadge=$('status-badge');
 
 let history=[], voiceMode=true, appStarted=false;
 
-/* ━━━ PRICE MAPS ━━━ */
-const P_SIZE={personal:7.99,small:9.99,medium:13.99,large:16.99,'extra large':19.99,xl:19.99};
-const P_CRUST={thin:0,thick:0,'hand tossed':0,regular:0,stuffed:2.50,cauliflower:3.00,'gluten free':2.50,'gluten-free':2.50};
-const P_SAUCE={marinara:0,tomato:0,bbq:0,ranch:0,buffalo:0,'garlic butter':0,alfredo:.50,pesto:.50,white:.50};
-const P_CHEESE={mozzarella:0,'no cheese':0,cheddar:.50,parmesan:.50,feta:1,gouda:1,ricotta:.75,'dairy-free':1.50,vegan:1.50};
-const P_TOP={pepperoni:1.50,mushrooms:1,mushroom:1,spinach:1,'jalapeños':.75,jalapenos:.75,olives:1,'black olives':1,'bell peppers':1,'bell pepper':1,'red onion':.75,onion:.75,'grilled chicken':2,chicken:2,'ground beef':2,beef:2,sausage:1.75,bacon:1.75,ham:1.50,pineapple:1,tomatoes:1,'fresh tomatoes':1,basil:.75,garlic:.75,arugula:1,broccoli:1,corn:.75,artichoke:1.50,anchovies:1.50,avocado:1.50,prosciutto:2.50,truffle:3,zucchini:1,'sun-dried tomatoes':1.25};
-const P_DRINK={cola:2.49,'diet cola':2.49,sprite:2.49,fanta:2.49,'root beer':2.49,'orange juice':2.99,'apple juice':2.99,lemonade:2.99,water:1.49,'still water':1.49,'sparkling water':1.99,sparkling:1.99,espresso:3.49,cappuccino:4.49,'italian soda':3.99,limonata:3.99,'craft beer':5.99,beer:5.99,'red wine':6.99,'white wine':6.99,prosecco:7.99};
-const SIZE_LBL={personal:'Personal 6"',small:'Small 8"',medium:'Medium 12"',large:'Large 14"','extra large':'XL 16"',xl:'XL 16"'};
+/* ━━━ PRICE MAPS — loaded from /prices at startup (never hardcoded) ━━━ */
+let P_SIZE={}, P_CRUST={}, P_SAUCE={}, P_CHEESE={}, P_TOP={}, P_DRINK={}, SIZE_LBL={};
+(async()=>{
+  try{
+    const r=await fetch('/prices');
+    if(!r.ok)throw new Error(r.status);
+    const d=await r.json();
+    P_SIZE=d.sizes; P_CRUST=d.crusts; P_SAUCE=d.sauces; P_CHEESE=d.cheeses;
+    P_TOP=d.toppings; P_DRINK=d.drinks; SIZE_LBL=d.size_labels;
+  }catch(e){console.warn('[Prices] fetch failed, live card prices unavailable:',e)}
+})();
 
 function lookup(map,val){
   if(!val)return 0;const v=val.toLowerCase();
@@ -544,7 +547,7 @@ async function send(){
   try{
     const r=await fetch('/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({history})});
     const d=await r.json();
-    if(d.reply){setPinoMsg(d.reply);history.push({role:'assistant',content:d.reply});speakNatural(d.reply)}
+    if(d.reply){setPinoMsg(d.reply);history.push({role:'assistant',content:d.reply});if(r.status!==429)speakNatural(d.reply)}
     if(d.partial)updateCard(d.partial);
     if(d.receipt){orderDone=true;showReceipt(d.receipt)}
   }catch(e){setPinoMsg('⚠️ Connection error — try again.')}

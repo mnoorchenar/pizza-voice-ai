@@ -1,17 +1,175 @@
-﻿from flask import Flask, render_template, request, jsonify, Response
+"""
+PizzaVoice – Pino AI Pizza Ordering Assistant
+Optimised backend:
+  • catalogue.py is the single source of truth for all menu data & prices
+  • /prices endpoint keeps frontend JS in sync — no hardcoded JS price maps
+  • Stage-aware dynamic menu injection (RAG without model download)
+  • Pre-compiled word-boundary patterns for every menu key
+  • Pre-sorted catalogue keys computed once at startup
+  • InferenceClient module-level singleton
+  • Token-budget conversation trimming (replaces naive last-20)
+  • TTS audio LRU cache (64 entries)
+  • Pydantic validation on every ORDER / UPDATE block
+  • Simple per-IP rate limiter on /chat (30 req/min)
+  • /stats endpoint for live token-usage monitoring
+  • max_tokens 180 → 250, temperature 0.75 → 0.70
+"""
+
+from flask import Flask, render_template, request, jsonify, Response
 from huggingface_hub import InferenceClient
-import os, re, json, uuid, io, asyncio
+import os, re, json, uuid, asyncio, hashlib, random, time
 import requests as http_req
+from collections import defaultdict
+from typing import Optional, List
+from pydantic import BaseModel, ValidationError
+from datetime import datetime
+
+# ── All menu data lives in catalogue.py — imported here, served via /prices ───
+from catalogue import (
+    SIZES_MAP, CRUSTS_MAP, SAUCES_MAP, CHEESES_MAP,
+    TOPPINGS_MAP, DRINKS_MAP, EXTRAS_MAP,
+    TAX_RATE, FANCY_QUOTES,
+)
+
 try:
     import edge_tts
 except ImportError:
     edge_tts = None
-from datetime import datetime
 
 app = Flask(__name__)
 
-# ── System prompt ──────────────────────────────────────────────────────────────
-SYSTEM = """You are Pino, a warm and witty Italian pizza waiter at PizzaVoice.
+# ── Pre-sorted catalogue keys — computed ONCE at startup ───────────────────────
+_S_SIZES    = sorted(SIZES_MAP,    key=len, reverse=True)
+_S_CRUSTS   = sorted(CRUSTS_MAP,   key=len, reverse=True)
+_S_SAUCES   = sorted(SAUCES_MAP,   key=len, reverse=True)
+_S_CHEESES  = sorted(CHEESES_MAP,  key=len, reverse=True)
+_S_TOPPINGS = sorted(TOPPINGS_MAP, key=len, reverse=True)
+_S_DRINKS   = sorted(DRINKS_MAP,   key=len, reverse=True)
+_S_EXTRAS   = sorted(EXTRAS_MAP,   key=len, reverse=True)
+
+# Pre-compiled word-boundary regex for every menu key — built ONCE at import
+_WB: dict = {
+    k: re.compile(r'\b' + re.escape(k) + r'\b', re.IGNORECASE)
+    for k in (list(SIZES_MAP) + list(CRUSTS_MAP) + list(SAUCES_MAP) +
+              list(CHEESES_MAP) + list(TOPPINGS_MAP) + list(DRINKS_MAP) +
+              list(EXTRAS_MAP))
+}
+
+# Static compiled patterns
+_ORDER_RE    = re.compile(r"#{1,3}\s*ORDER\s*#{1,3}(.*?)#{1,3}\s*END\s*#{1,3}",  re.DOTALL | re.IGNORECASE)
+_UPDATE_RE   = re.compile(r"#{1,3}\s*UPDATE\s*#{1,3}(.*?)#{1,3}\s*END\s*#{1,3}", re.DOTALL | re.IGNORECASE)
+_CODE_FENCE  = re.compile(r"^```[a-zA-Z]*\n?|```$", re.MULTILINE)
+_JSON_BLOB   = re.compile(r"\{.*\}", re.DOTALL)
+_NAME_PREFIX = re.compile(r"^(my name is|i'm|i am|it's|this is|hey i'm|call me)\s+", re.IGNORECASE)
+_QTY_RE      = re.compile(r'\b(\d+)\s*(pizza|pie)', re.IGNORECASE)
+_TTS_CLEAN   = re.compile(r"[#*_~`>]|\bhttps?://\S+")
+
+# ── Stage-aware dynamic menu injection (the RAG layer) ─────────────────────────
+#
+# Instead of embedding the full ~450-token menu in every system prompt,
+# we detect which menu sections are relevant for the current conversation
+# stage and inject only those (~100-200 tokens on average).
+#
+# No vector model or network call required — stage detection is deterministic
+# and keyword-based, which is more reliable for a structured ordering flow.
+
+_MENU_SECTIONS = {
+    "sizes":    'Sizes: Personal 6" $7.99 | Small 8" $9.99 | Medium 12" $13.99 | Large 14" $16.99 | XL 16" $19.99',
+    "crusts":   "Crusts: Thin / Thick / Hand Tossed (free) | Stuffed +$2.50 | Cauliflower +$3.00 | Gluten-Free +$2.50",
+    "sauces":   "Sauces: Marinara / Tomato / BBQ / Ranch / Buffalo / Garlic Butter (free) | Alfredo / Pesto +$0.50",
+    "cheeses":  "Cheese: Mozzarella (free) | Cheddar / Parmesan +$0.50 | Feta / Gouda +$1.00 | Ricotta +$0.75 | Vegan / Dairy-Free +$1.50 | No Cheese (free)",
+    "toppings": (
+        "Toppings ($0.75–$3.00 each):\n"
+        "  Meat: Pepperoni, Sausage, Bacon, Ham, Chicken, Ground Beef, Anchovies, Prosciutto\n"
+        "  Veg:  Mushrooms, Spinach, Jalapeños, Olives, Bell Peppers, Red Onion, Tomatoes, Basil,\n"
+        "        Garlic, Arugula, Broccoli, Corn, Artichoke, Avocado, Zucchini, Sun-Dried Tomatoes, Pineapple\n"
+        "  Premium: Truffle Oil +$3.00"
+    ),
+    "drinks": (
+        "Drinks:\n"
+        "  Soft: Cola / Diet Cola / Sprite / Fanta / Root Beer $2.49\n"
+        "  Juice: Orange Juice / Apple Juice $2.99, Lemonade $2.99\n"
+        "  Water: Still $1.49, Sparkling $1.99\n"
+        "  Italian: Espresso $3.49, Cappuccino $4.49, Italian Soda / Limonata $3.99\n"
+        "  Beer/Wine: Craft Beer $5.99, Red/White Wine $6.99, Prosecco $7.99"
+    ),
+    "extras": "Extras: Extra Cheese +$1.50 | Extra Sauce +$0.50 | Well Done / Light Sauce (free)",
+}
+
+_SECTION_ORDER = ["sizes", "crusts", "sauces", "cheeses", "toppings", "drinks", "extras"]
+
+# Keywords that signal the user is asking about a particular menu section
+_SECTION_KW = {
+    "sizes":    ["size", "large", "medium", "small", "personal", "xl",
+                 "how big", "6 inch", "12 inch", "big pizza"],
+    "crusts":   ["crust", "thin", "thick", "stuffed", "cauliflower",
+                 "gluten", "base", "dough"],
+    "sauces":   ["sauce", "marinara", "bbq", "barbecue", "pesto",
+                 "ranch", "buffalo", "alfredo", "garlic butter"],
+    "cheeses":  ["cheese", "mozzarella", "cheddar", "parmesan", "feta",
+                 "gouda", "ricotta", "vegan cheese", "dairy", "no cheese"],
+    "toppings": ["topping", "pepperoni", "mushroom", "spinach", "vegetarian",
+                 "vegan", "meat", "chicken", "beef", "bacon", "sausage",
+                 "onion", "pepper", "olive", "pineapple", "anchov",
+                 "prosciutto", "truffle", "arugula", "broccoli"],
+    "drinks":   ["drink", "cola", "water", "juice", "beer", "wine",
+                 "coffee", "espresso", "cappuccino", "soda", "lemonade",
+                 "beverage", "thirsty", "prosecco"],
+    "extras":   ["extra", "well done", "light sauce", "crispy"],
+}
+
+# Broad-question triggers → return entire menu
+# Use longer/specific phrases so common words like "options" or "list"
+# inside normal sentences don't accidentally trigger a full-menu dump.
+_FULL_MENU_KW = frozenset({
+    "menu", "full menu", "whole menu", "entire menu",
+    "everything", "show me everything", "see everything",
+    "what do you have", "what've you got", "what's available",
+    "all items", "complete list",
+})
+
+
+def _relevant_sections(partial: Optional[dict], user_msg: str) -> list:
+    """
+    Return the ordered list of menu section keys relevant to this turn.
+    This is the RAG retrieval step — no embeddings needed.
+    """
+    low = (user_msg or "").lower()
+
+    # Broad question → give the full menu so Pino can answer anything
+    if any(kw in low for kw in _FULL_MENU_KW):
+        return _SECTION_ORDER[:]
+
+    needed: set = set()
+
+    # ── Stage-aware: include sections for fields not yet confirmed ─────────────
+    if partial:
+        if not partial.get("size"):   needed.add("sizes")
+        if not partial.get("crust"):  needed.add("crusts")
+        if not partial.get("sauce"):  needed.add("sauces")
+        if not partial.get("cheese"): needed.add("cheeses")
+        # Toppings & drinks become relevant once the base is set
+        if partial.get("sauce"):      needed.add("toppings")
+        if partial.get("cheese"):     needed.add("drinks")
+    else:
+        # No partial order yet — early conversation; send first three sections
+        needed.update(["sizes", "crusts", "sauces", "cheeses", "toppings"])
+
+    # ── Keyword-aware: what the user is explicitly asking about ────────────────
+    for section, kws in _SECTION_KW.items():
+        if any(k in low for k in kws):
+            needed.add(section)
+
+    # Always include extras (tiny, useful context)
+    needed.add("extras")
+
+    # Preserve canonical section order; fall back to full menu if nothing matched
+    result = [s for s in _SECTION_ORDER if s in needed]
+    return result if result else _SECTION_ORDER[:]
+
+
+_BASE_SYSTEM = """\
+You are Pino, a warm and witty Italian pizza waiter at PizzaVoice.
 
 YOUR PERSONALITY:
 - Friendly, relaxed, occasionally drops light Italian expressions ("Perfetto!", "Magnifico!", "Bellissimo!")
@@ -35,26 +193,6 @@ RESPONSE STYLE:
   BAD: "Great, large pepperoni pizza! And for the crust?"  GOOD: "Nice! What crust would you like?"
 - Just acknowledge briefly and move to the next thing.
 - Use casual phrasing ("Nice!", "Perfect!", "And the crust?") not formal sentences.
-
-MENU:
-  Sizes:   Personal 6" $7.99 | Small 8" $9.99 | Medium 12" $13.99 | Large 14" $16.99 | XL 16" $19.99
-  Crusts:  Thin / Thick / Hand Tossed (free) | Stuffed +$2.50 | Cauliflower +$3.00 | Gluten-Free +$2.50
-  Sauces:  Marinara / Tomato / BBQ / Ranch / Buffalo / Garlic Butter (free) | Alfredo / Pesto +$0.50
-  Cheese:  Mozzarella (free) | Cheddar/Parmesan +$0.50 | Feta/Gouda +$1.00 | Ricotta +$0.75
-           Vegan/Dairy-Free +$1.50 | No Cheese (free)
-  Toppings ($0.75–$3.00 each):
-    Meat:    Pepperoni, Italian Sausage, Bacon, Ham, Grilled Chicken, Ground Beef, Anchovies, Prosciutto
-    Veg:     Mushrooms, Spinach, Jalapeños, Black Olives, Bell Peppers, Red Onion, Fresh Tomatoes,
-             Fresh Basil, Roasted Garlic, Arugula, Broccoli, Sweet Corn, Artichoke Hearts,
-             Avocado, Zucchini, Sun-Dried Tomatoes, Pineapple
-    Premium: Truffle Oil +$3.00
-  Drinks:
-    Soft Drinks: Cola $2.49 | Diet Cola $2.49 | Sprite $2.49 | Fanta $2.49 | Root Beer $2.49
-    Juice:       Orange Juice $2.99 | Apple Juice $2.99 | Lemonade $2.99
-    Water:       Still Water $1.49 | Sparkling Water $1.99
-    Italian:     Espresso $3.49 | Cappuccino $4.49 | Italian Soda $3.99 | Limonata $3.99
-    Beer/Wine:   Craft Beer $5.99 | House Red Wine $6.99 | House White Wine $6.99 | Prosecco $7.99
-  Extras:  Extra Cheese +$1.50 | Extra Sauce +$0.50 | Well Done / Light Sauce (free)
 
 BEHAVIOUR RULES:
 - Make smart recommendations when asked (vegetarian → pesto base, feta, spinach, mushrooms, etc.)
@@ -96,98 +234,134 @@ And which sauce?
 
 After adding pepperoni and mushrooms:
 Anything else on top?
-##UPDATE##{"name":"lisa","size":"medium","crust":"thin","sauce":"marinara","cheese":"mozzarella","toppings":["pepperoni","mushrooms"],"drinks":[],"extras":[],"quantity":1,"address":null}##END##
+##UPDATE##{"name":"lisa","size":"medium","crust":"thin","sauce":"marinara","cheese":"mozzarella","toppings":["pepperoni","mushrooms"],"drinks":[],"extras":[],"quantity":1,"address":null}##END##\
 """
 
-# ── Catalogue maps ─────────────────────────────────────────────────────────────
-SIZES_MAP = {
-    "personal": ("Personal 6\"", 7.99), "small": ("Small 8\"", 9.99),
-    "medium": ("Medium 12\"", 13.99), "large": ("Large 14\"", 16.99),
-    "extra large": ("XL 16\"", 19.99), "xl": ("XL 16\"", 19.99),
-}
-CRUSTS_MAP = {
-    "thin": ("Thin Crust", 0.00), "crispy": ("Crispy Thin", 0.00),
-    "thick": ("Thick Crust", 0.00), "hand tossed": ("Hand Tossed", 0.00),
-    "stuffed": ("Stuffed Crust", 2.50), "cauliflower": ("Cauliflower Crust", 3.00),
-    "gluten free": ("Gluten-Free Crust", 2.50), "gluten-free": ("Gluten-Free Crust", 2.50),
-}
-SAUCES_MAP = {
-    "marinara": ("Marinara", 0.00), "tomato": ("Classic Tomato", 0.00),
-    "bbq": ("BBQ", 0.00), "barbecue": ("BBQ", 0.00),
-    "alfredo": ("Alfredo", 0.50), "white": ("White Alfredo", 0.50),
-    "pesto": ("Basil Pesto", 0.50), "ranch": ("Ranch", 0.00),
-    "buffalo": ("Buffalo", 0.00), "garlic butter": ("Garlic Butter", 0.00),
-}
-CHEESES_MAP = {
-    "no cheese": ("No Cheese", 0.00), "dairy-free": ("Dairy-Free", 1.50),
-    "vegan": ("Vegan Cheese", 1.50), "mozzarella": ("Mozzarella", 0.00),
-    "cheddar": ("Cheddar", 0.50), "parmesan": ("Parmesan", 0.50),
-    "feta": ("Feta", 1.00), "gouda": ("Gouda", 1.00), "ricotta": ("Ricotta", 0.75),
-}
-TOPPINGS_MAP = {
-    "pepperoni": ("Pepperoni", "🍕", 1.50), "mushrooms": ("Mushrooms", "🍄", 1.00),
-    "mushroom": ("Mushrooms", "🍄", 1.00), "spinach": ("Spinach", "🥬", 1.00),
-    "jalapeños": ("Jalapeños", "🌶️", 0.75), "jalapenos": ("Jalapeños", "🌶️", 0.75),
-    "jalapeno": ("Jalapeños", "🌶️", 0.75), "olives": ("Black Olives", "🫒", 1.00),
-    "black olives": ("Black Olives", "🫒", 1.00),
-    "bell peppers": ("Bell Peppers", "🫑", 1.00), "bell pepper": ("Bell Peppers", "🫑", 1.00),
-    "red onion": ("Red Onion", "🧅", 0.75), "onion": ("Red Onion", "🧅", 0.75),
-    "grilled chicken": ("Grilled Chicken", "🍗", 2.00), "chicken": ("Grilled Chicken", "🍗", 2.00),
-    "ground beef": ("Ground Beef", "🥩", 2.00), "beef": ("Ground Beef", "🥩", 2.00),
-    "sausage": ("Italian Sausage", "🌭", 1.75), "bacon": ("Bacon", "🥓", 1.75),
-    "ham": ("Ham", "🍖", 1.50), "pineapple": ("Pineapple", "🍍", 1.00),
-    "fresh tomatoes": ("Fresh Tomatoes", "🍅", 1.00), "tomatoes": ("Fresh Tomatoes", "🍅", 1.00),
-    "basil": ("Fresh Basil", "🌿", 0.75), "garlic": ("Roasted Garlic", "🧄", 0.75),
-    "arugula": ("Arugula", "🥗", 1.00), "broccoli": ("Broccoli", "🥦", 1.00),
-    "corn": ("Sweet Corn", "🌽", 0.75), "artichoke": ("Artichoke Hearts", "🌱", 1.50),
-    "anchovies": ("Anchovies", "🐟", 1.50), "avocado": ("Avocado", "🥑", 1.50),
-    "prosciutto": ("Prosciutto", "🍖", 2.50), "truffle": ("Truffle Oil", "✨", 3.00),
-    "zucchini": ("Zucchini", "🥒", 1.00),
-    "sun-dried tomatoes": ("Sun-Dried Tomatoes", "☀️", 1.25),
-    "sun dried tomato": ("Sun-Dried Tomatoes", "☀️", 1.25),
-}
-DRINKS_MAP = {
-    "cola":            ("Cola",            "🥤", 2.49),
-    "diet cola":       ("Diet Cola",       "🥤", 2.49),
-    "sprite":          ("Sprite",          "🥤", 2.49),
-    "fanta":           ("Fanta",           "🥤", 2.49),
-    "root beer":       ("Root Beer",       "🍺", 2.49),
-    "orange juice":    ("Orange Juice",    "🍊", 2.99),
-    "apple juice":     ("Apple Juice",     "🍏", 2.99),
-    "lemonade":        ("Lemonade",        "🍋", 2.99),
-    "still water":     ("Still Water",     "💧", 1.49),
-    "water":           ("Still Water",     "💧", 1.49),
-    "sparkling water": ("Sparkling Water", "✨", 1.99),
-    "sparkling":       ("Sparkling Water", "✨", 1.99),
-    "espresso":        ("Espresso",        "☕", 3.49),
-    "cappuccino":      ("Cappuccino",      "☕", 4.49),
-    "italian soda":    ("Italian Soda",    "🧊", 3.99),
-    "limonata":        ("Limonata",        "🍋", 3.99),
-    "craft beer":      ("Craft Beer",      "🍺", 5.99),
-    "beer":            ("Craft Beer",      "🍺", 5.99),
-    "red wine":        ("House Red Wine",  "🍷", 6.99),
-    "white wine":      ("House White Wine","🥂", 6.99),
-    "prosecco":        ("Prosecco",        "🥂", 7.99),
-}
-TAX_RATE = 0.13
 
-# ── Fancy quotes for the receipt ───────────────────────────────────────────────
-import random
-FANCY_QUOTES = [
-    "\"In pizza we trust.\" — Every Italian ever 🍕",
-    "\"Life is too short for bad pizza.\" — Pino 🇮🇹",
-    "\"You can't make everyone happy. You're not pizza.\" — Unknown 😄",
-    "\"A slice a day keeps the sadness away.\" — Ancient Proverb 🧡",
-    "\"La vita è bella… especially with pizza!\" — PizzaVoice 💫",
-    "\"Pizza is a lot like love — when it's good, it's really good.\" — Chef Pino 🍷",
-    "\"Eat pizza. Be happy. Repeat.\" — The Italian Way 🌟",
-    "\"There's no 'we' in pizza… wait, yes there is. Share the love!\" — Pino 🤌",
-]
+def _build_system(partial: Optional[dict] = None, user_msg: str = "") -> str:
+    """Assemble the system prompt, injecting only the relevant menu sections."""
+    sections  = _relevant_sections(partial, user_msg)
+    menu_text = "\n".join(_MENU_SECTIONS[s] for s in sections)
+    return f"{_BASE_SYSTEM}\n\nMENU:\n{menu_text}"
 
-# ── Models: (model_id, supports_chat_completion) ───────────────────────────────
-# Ordered by reliability on HF Serverless Inference API (free tier)
-# Updated Feb 2026 — old models returned 410 Gone on the legacy endpoint.
-# huggingface_hub >= 0.31 auto-routes via Inference Providers.
+
+# ── Pydantic models — validate every ORDER / UPDATE block ──────────────────────
+class _OrderUpdate(BaseModel):
+    name:     Optional[str] = None
+    size:     Optional[str] = None
+    crust:    Optional[str] = None
+    sauce:    Optional[str] = None
+    cheese:   Optional[str] = None
+    toppings: List[str]     = []
+    drinks:   List[str]     = []
+    extras:   List[str]     = []
+    quantity: int           = 1
+    address:  Optional[str] = None
+
+
+class _FinalOrder(_OrderUpdate):
+    name:    str
+    size:    str
+    crust:   str
+    sauce:   str
+    cheese:  str
+    address: str
+
+
+def _parse_json(raw: str) -> Optional[dict]:
+    """Parse JSON from LLM output with graceful markdown/blob fallback."""
+    cleaned = _CODE_FENCE.sub("", raw).strip()
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        m = _JSON_BLOB.search(cleaned)
+        if m:
+            try:
+                return json.loads(m.group())
+            except Exception:
+                pass
+    return None
+
+
+def _validate_update(data: dict) -> dict:
+    try:
+        return _OrderUpdate(**data).model_dump()
+    except (ValidationError, Exception):
+        return data
+
+
+def _validate_final(data: dict) -> dict:
+    try:
+        return _FinalOrder(**data).model_dump()
+    except (ValidationError, Exception):
+        return data
+
+
+# ── InferenceClient — module-level singleton ───────────────────────────────────
+_hf_client: Optional[InferenceClient] = None
+_hf_token_cached: str = ""
+
+
+def _get_client() -> Optional[InferenceClient]:
+    global _hf_client, _hf_token_cached
+    token = (os.environ.get("HF_TOKEN") or
+             os.environ.get("HUGGING_FACE_HUB_TOKEN") or "").strip()
+    if not token:
+        return None
+    if _hf_client is None or token != _hf_token_cached:
+        _hf_client = InferenceClient(token=token)
+        _hf_token_cached = token
+    return _hf_client
+
+
+# ── Rate limiter — simple in-memory per-IP tracker ────────────────────────────
+_RATE_LIMIT_RPM  = 30          # max /chat requests per IP per 60-second window
+_rate_store: dict = defaultdict(list)
+
+def _is_rate_limited(ip: str) -> bool:
+    now    = time.time()
+    window = now - 60.0
+    prev   = [t for t in _rate_store[ip] if t > window]
+    _rate_store[ip] = prev
+    if len(prev) >= _RATE_LIMIT_RPM:
+        return True
+    _rate_store[ip].append(now)
+    return False
+
+
+# ── Token tracking & history trimming ─────────────────────────────────────────
+_stats: dict = {
+    "calls": 0,
+    "input_tokens_est": 0,
+    "output_tokens_est": 0,
+    "model_hits": {},
+}
+
+
+def _est_tokens(text: str) -> int:
+    """Rough token estimate: ~4 chars per token."""
+    return max(1, len(text) // 4)
+
+
+def _trim_history(history: list, token_budget: int = 900) -> list:
+    """
+    Return the most-recent messages that fit within token_budget.
+    Always keeps at least the 2 most-recent messages regardless of size,
+    so the LLM always has immediate context.
+    """
+    if not history:
+        return history
+    kept, total = [], 0
+    for msg in reversed(history):
+        t = _est_tokens(msg["content"])
+        if total + t > token_budget and len(kept) >= 2:
+            break
+        kept.append(msg)
+        total += t
+    return list(reversed(kept))
+
+
+# ── Models ─────────────────────────────────────────────────────────────────────
 MODELS = [
     ("Qwen/Qwen2.5-72B-Instruct",                True),
     ("meta-llama/Llama-3.3-70B-Instruct",        True),
@@ -198,9 +372,9 @@ MODELS = [
 ]
 
 
-def _build_prompt(history):
-    """Plain-text prompt for models that only support text_generation."""
-    parts = [f"[SYSTEM]\n{SYSTEM}\n"]
+def _build_text_prompt(history: list, system: str) -> str:
+    """Plain-text fallback prompt for non-chat-completion models."""
+    parts = [f"[SYSTEM]\n{system}\n"]
     for msg in history:
         role = "User" if msg["role"] == "user" else "Pino"
         parts.append(f"{role}: {msg['content']}")
@@ -208,195 +382,166 @@ def _build_prompt(history):
     return "\n".join(parts)
 
 
-def chat_with_llm(history):
-    import sys
-
-    # HF Spaces auto-injects HUGGING_FACE_HUB_TOKEN; also accept manual HF_TOKEN secret
-    hf_token_raw   = os.environ.get("HF_TOKEN") or ""
-    hfhub_token_raw = os.environ.get("HUGGING_FACE_HUB_TOKEN") or ""
-    token = (hf_token_raw or hfhub_token_raw).strip()
-
-    print(f"[DEBUG] HF_TOKEN present: {bool(hf_token_raw.strip())}", flush=True)
-    print(f"[DEBUG] HUGGING_FACE_HUB_TOKEN present: {bool(hfhub_token_raw.strip())}", flush=True)
-    print(f"[DEBUG] Token resolved: {bool(token)} (len={len(token)})", flush=True)
-    sys.stdout.flush()
-
-    if not token:
+def chat_with_llm(history: list, partial: Optional[dict] = None) -> str:
+    client = _get_client()
+    if not client:
         return "⚠️ No HuggingFace token found. Add HF_TOKEN in Space Settings → Secrets."
 
-    trimmed  = history[-20:]
-    messages = [{"role": "system", "content": SYSTEM}] + trimmed
-    client   = InferenceClient(token=token)
-    last_err = "Unknown error"
+    last_user = next(
+        (m["content"] for m in reversed(history) if m["role"] == "user"), ""
+    )
+    system   = _build_system(partial, last_user)
+    trimmed  = _trim_history(history)
+    messages = [{"role": "system", "content": system}] + trimmed
 
+    # Track estimated input tokens before the call
+    input_est = sum(_est_tokens(m["content"]) for m in messages)
+    _stats["input_tokens_est"] += input_est
+    _stats["calls"] += 1
+
+    print(f"[LLM] call #{_stats['calls']} | ~{input_est} input tokens "
+          f"| history {len(trimmed)}/{len(history)} msgs", flush=True)
+
+    last_err = "Unknown error"
     for model_id, supports_chat in MODELS:
-        print(f"[DEBUG] Trying model: {model_id} (chat={supports_chat})", flush=True)
+        print(f"[LLM] trying {model_id}", flush=True)
         try:
             if supports_chat:
-                resp = client.chat_completion(
+                resp   = client.chat_completion(
                     model=model_id,
                     messages=messages,
-                    max_tokens=180,
-                    temperature=0.75,
+                    max_tokens=250,   # raised: ##UPDATE## block needs ~100 tokens
+                    temperature=0.70,
                 )
                 result = resp.choices[0].message.content.strip()
-                print(f"[DEBUG] ✅ Success with {model_id} — response length: {len(result)}", flush=True)
-                return result
             else:
-                prompt = _build_prompt(trimmed)
+                prompt = _build_text_prompt(trimmed, system)
                 resp   = client.text_generation(
-                    prompt,
-                    model=model_id,
-                    max_new_tokens=150,
-                    temperature=0.75,
+                    prompt, model=model_id,
+                    max_new_tokens=220, temperature=0.70,
                     stop_sequences=["User:", "[SYSTEM]"],
                 )
                 result = resp.split("User:")[0].strip()
-                print(f"[DEBUG] ✅ Success with {model_id} — response length: {len(result)}", flush=True)
-                return result
+
+            out_est = _est_tokens(result)
+            _stats["output_tokens_est"] += out_est
+            _stats["model_hits"][model_id] = _stats["model_hits"].get(model_id, 0) + 1
+            print(f"[LLM] ✅ {model_id} | ~{out_est} output tokens", flush=True)
+            return result
 
         except Exception as e:
             last_err = str(e)
-            print(f"[DEBUG] ❌ Failed {model_id}: {last_err[:300]}", flush=True)
-            continue
+            print(f"[LLM] ❌ {model_id}: {last_err[:200]}", flush=True)
 
-    print(f"[DEBUG] 🚨 All models exhausted. Last error: {last_err[:300]}", flush=True)
+    print(f"[LLM] 🚨 all models failed. Last: {last_err[:200]}", flush=True)
     return f"⚠️ All models failed. Last error: {last_err[:200]}"
 
 
-# ── Order extraction ───────────────────────────────────────────────────────────
-ORDER_RE = re.compile(
-    r"#{1,3}\s*ORDER\s*#{1,3}(.*?)#{1,3}\s*END\s*#{1,3}",
-    re.DOTALL | re.IGNORECASE,
-)
-
-def extract_order(text):
-    m = ORDER_RE.search(text)
+# ── Order / update extraction ──────────────────────────────────────────────────
+def extract_order(text: str):
+    m = _ORDER_RE.search(text)
     if not m:
         return text, None
-    raw = re.sub(r"^```[a-z]*\n?|```$", "", m.group(1).strip(), flags=re.MULTILINE).strip()
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        inner = re.search(r"\{.*\}", raw, re.DOTALL)
-        if not inner:
-            return ORDER_RE.sub("", text).strip(), None
-        try:
-            data = json.loads(inner.group())
-        except Exception:
-            return ORDER_RE.sub("", text).strip(), None
-    return ORDER_RE.sub("", text).strip(), data
+    raw  = _CODE_FENCE.sub("", m.group(1).strip()).strip()
+    data = _parse_json(raw)
+    if data:
+        data = _validate_final(data)
+    return _ORDER_RE.sub("", text).strip(), data
 
 
-# ── Live-order partial extraction ──────────────────────────────────────────────
-UPDATE_RE = re.compile(
-    r"#{1,3}\s*UPDATE\s*#{1,3}(.*?)#{1,3}\s*END\s*#{1,3}",
-    re.DOTALL | re.IGNORECASE,
-)
-
-def extract_update(text):
-    """Pull the optional ##UPDATE##…##END## block, return (clean_text, dict|None)."""
-    m = UPDATE_RE.search(text)
+def extract_update(text: str):
+    m = _UPDATE_RE.search(text)
     if not m:
         return text, None
-    raw = m.group(1).strip()
-    clean_text = UPDATE_RE.sub("", text).strip()
-    try:
-        return clean_text, json.loads(raw)
-    except json.JSONDecodeError:
-        inner = re.search(r"\{.*\}", raw, re.DOTALL)
-        if inner:
-            try:
-                return clean_text, json.loads(inner.group())
-            except Exception:
-                pass
-    return clean_text, None
+    raw        = m.group(1).strip()
+    clean_text = _UPDATE_RE.sub("", text).strip()
+    data       = _parse_json(raw)
+    if data:
+        data = _validate_update(data)
+    return clean_text, data
 
 
-# ── Server-side fallback: infer partial order from conversation ────────────────
-def infer_partial(history):
-    """Lightweight keyword extraction as fallback when LLM skips ##UPDATE##."""
-    state = {"name": None, "size": None, "crust": None, "sauce": None,
-             "cheese": None, "toppings": [], "drinks": [], "extras": [],
-             "quantity": 1, "address": None}
+# ── Keyword-based partial inference (server-side fallback) ─────────────────────
+_MENU_KEY_SET = frozenset(SIZES_MAP) | frozenset(CRUSTS_MAP) | frozenset(SAUCES_MAP)
+
+
+def infer_partial(history: list) -> dict:
+    """
+    Lightweight keyword extraction used as fallback when the LLM omits ##UPDATE##.
+    Uses pre-sorted keys and pre-compiled patterns — no per-call sorting.
+    """
+    state: dict = {
+        "name": None, "size": None, "crust": None, "sauce": None,
+        "cheese": None, "toppings": [], "drinks": [], "extras": [],
+        "quantity": 1, "address": None,
+    }
 
     for i, msg in enumerate(history):
         if msg["role"] != "user":
             continue
         text = msg["content"].strip()
-        low = text.lower()
+        low  = text.lower()
 
-        # Name: first user message if short and not a menu keyword
+        # Name heuristic: short first message not containing menu keywords
         if i == 0 and not state["name"]:
-            cleaned = re.sub(r"^(my name is|i'm|i am|it's|this is|hey i'm|call me)\s+", "", low).strip()
-            words = cleaned.split()
-            menu_keys = set(SIZES_MAP) | set(CRUSTS_MAP) | set(SAUCES_MAP)
-            if len(words) <= 3 and not any(k in cleaned for k in menu_keys):
+            cleaned = _NAME_PREFIX.sub("", low).strip()
+            words   = cleaned.split()
+            if len(words) <= 3 and not any(k in cleaned for k in _MENU_KEY_SET):
                 state["name"] = cleaned.title()
                 continue
 
-        # Size
-        for k in sorted(SIZES_MAP, key=len, reverse=True):
-            if re.search(r'\b' + re.escape(k) + r'\b', low):
+        for k in _S_SIZES:
+            if _WB[k].search(low):
                 state["size"] = k
                 break
 
-        # Crust
-        for k in sorted(CRUSTS_MAP, key=len, reverse=True):
-            if re.search(r'\b' + re.escape(k) + r'\b', low):
+        for k in _S_CRUSTS:
+            if _WB[k].search(low):
                 state["crust"] = k
                 break
 
-        # Sauce
-        for k in sorted(SAUCES_MAP, key=len, reverse=True):
-            if re.search(r'\b' + re.escape(k) + r'\b', low):
+        for k in _S_SAUCES:
+            if _WB[k].search(low):
                 state["sauce"] = k
                 break
 
-        # Cheese
-        for k in sorted(CHEESES_MAP, key=len, reverse=True):
-            if re.search(r'\b' + re.escape(k) + r'\b', low):
+        for k in _S_CHEESES:
+            if _WB[k].search(low):
                 state["cheese"] = k
                 break
 
-        # Toppings
         seen_t = set(state["toppings"])
-        for k in sorted(TOPPINGS_MAP, key=len, reverse=True):
-            if re.search(r'\b' + re.escape(k) + r'\b', low) and k not in seen_t:
+        for k in _S_TOPPINGS:
+            if k not in seen_t and _WB[k].search(low):
                 state["toppings"].append(k)
                 seen_t.add(k)
 
-        # Drinks
         seen_d = set(state["drinks"])
-        for k in sorted(DRINKS_MAP, key=len, reverse=True):
-            if re.search(r'\b' + re.escape(k) + r'\b', low) and k not in seen_d:
+        for k in _S_DRINKS:
+            if k not in seen_d and _WB[k].search(low):
                 state["drinks"].append(k)
                 seen_d.add(k)
 
-        # Quantity
-        qm = re.search(r'\b(\d+)\s*(pizza|pie)', low)
+        qm = _QTY_RE.search(low)
         if qm:
             state["quantity"] = int(qm.group(1))
 
-        # Address: if previous assistant message asked about address/delivery
-        if i > 0 and history[i-1].get("role") == "assistant":
-            prev_a = history[i-1]["content"].lower()
-            if ("address" in prev_a or "deliver" in prev_a) and len(text) > 5:
+        # Address: user message after assistant asked for delivery details
+        if i > 0 and history[i - 1].get("role") == "assistant":
+            prev = history[i - 1]["content"].lower()
+            if ("address" in prev or "deliver" in prev) and len(text) > 5:
                 state["address"] = text
 
     return state
 
 
-def merge_partial(llm_update, inferred):
-    """Merge LLM UPDATE data with inferred data, preferring LLM non-null values."""
+def merge_partial(llm_update: Optional[dict], inferred: Optional[dict]) -> Optional[dict]:
     if not llm_update and not inferred:
         return None
-    base = inferred or {}
-    overlay = llm_update or {}
-    merged = {**base}
-    for k, v in overlay.items():
+    merged = {**(inferred or {})}
+    for k, v in (llm_update or {}).items():
         if k in ("toppings", "drinks", "extras"):
-            if v:  # non-empty list from LLM wins
+            if v:                   # non-empty LLM list wins
                 merged[k] = v
         elif v is not None:
             merged[k] = v
@@ -404,81 +549,81 @@ def merge_partial(llm_update, inferred):
 
 
 # ── Receipt builder ────────────────────────────────────────────────────────────
-def _pick(val, catalogue, default_key):
+def _pick(val: Optional[str], catalogue: dict, sorted_keys: list, default_key: str):
+    """Fuzzy-match val against catalogue using pre-sorted keys."""
     if not val:
         return catalogue[default_key]
     v = val.lower().strip()
-    for k in sorted(catalogue, key=len, reverse=True):
+    for k in sorted_keys:
         if k in v or v in k:
             return catalogue[k]
     return catalogue[default_key]
 
 
-def build_receipt(order_data):
-    size   = _pick(order_data.get("size"),   SIZES_MAP,   "medium")
-    crust  = _pick(order_data.get("crust"),  CRUSTS_MAP,  "hand tossed")
-    sauce  = _pick(order_data.get("sauce"),  SAUCES_MAP,  "tomato")
-    cheese = _pick(order_data.get("cheese"), CHEESES_MAP, "mozzarella")
+def _to_list(val) -> list:
+    if isinstance(val, str):
+        return [x.strip() for x in val.split(",")]
+    return list(val or [])
+
+
+def build_receipt(order_data: dict) -> dict:
+    size   = _pick(order_data.get("size"),   SIZES_MAP,   _S_SIZES,   "medium")
+    crust  = _pick(order_data.get("crust"),  CRUSTS_MAP,  _S_CRUSTS,  "hand tossed")
+    sauce  = _pick(order_data.get("sauce"),  SAUCES_MAP,  _S_SAUCES,  "tomato")
+    cheese = _pick(order_data.get("cheese"), CHEESES_MAP, _S_CHEESES, "mozzarella")
     qty    = max(1, int(order_data.get("quantity", 1)))
 
-    raw_tops = order_data.get("toppings", [])
-    if isinstance(raw_tops, str):
-        raw_tops = [x.strip() for x in raw_tops.split(",")]
-    seen, tops = set(), []
-    for item in raw_tops:
+    # Toppings
+    seen_t, tops = set(), []
+    for item in _to_list(order_data.get("toppings", [])):
         il = item.lower()
-        for k in sorted(TOPPINGS_MAP, key=len, reverse=True):
+        for k in _S_TOPPINGS:
             if k in il:
                 lbl, emoji, price = TOPPINGS_MAP[k]
-                if lbl not in seen:
-                    seen.add(lbl)
+                if lbl not in seen_t:
+                    seen_t.add(lbl)
                     tops.append({"label": lbl, "emoji": emoji, "price": price})
                 break
 
-    # ── Drinks ──
-    raw_drinks = order_data.get("drinks", [])
-    if isinstance(raw_drinks, str):
-        raw_drinks = [x.strip() for x in raw_drinks.split(",")]
-    seen_drinks, drinks_out = set(), []
-    for item in raw_drinks:
+    # Drinks
+    seen_d, drinks_out = set(), []
+    for item in _to_list(order_data.get("drinks", [])):
         il = item.lower().strip()
         if not il or il == "none":
             continue
-        for k in sorted(DRINKS_MAP, key=len, reverse=True):
+        for k in _S_DRINKS:
             if k in il or il in k:
                 lbl, emoji, price = DRINKS_MAP[k]
-                if lbl not in seen_drinks:
-                    seen_drinks.add(lbl)
+                if lbl not in seen_d:
+                    seen_d.add(lbl)
                     drinks_out.append({"label": lbl, "emoji": emoji, "price": price})
                 break
 
-    raw_ex = order_data.get("extras", [])
-    if isinstance(raw_ex, str):
-        raw_ex = [x.strip() for x in raw_ex.split(",")]
+    # Extras — uses EXTRAS_MAP via pre-sorted keys; unknown extras pass through
     extras_out = []
-    for item in raw_ex:
-        il = item.lower()
-        if "extra cheese" in il:
-            extras_out.append({"label": "Extra Cheese", "price": 1.50})
-        elif "extra sauce" in il:
-            extras_out.append({"label": "Extra Sauce",  "price": 0.50})
-        elif "well done"   in il:
-            extras_out.append({"label": "Well Done",    "price": 0.00})
-        elif "light sauce" in il:
-            extras_out.append({"label": "Light Sauce",  "price": 0.00})
-        elif item.strip():
+    for item in _to_list(order_data.get("extras", [])):
+        il = item.lower().strip()
+        if not il:
+            continue
+        matched = False
+        for k in _S_EXTRAS:
+            if k in il:
+                lbl, price = EXTRAS_MAP[k]
+                extras_out.append({"label": lbl, "price": price})
+                matched = True
+                break
+        if not matched:
             extras_out.append({"label": item.strip().title(), "price": 0.00})
 
-    # ── Address ──
-    address = order_data.get("address", "").strip() or "Pick-up"
+    address = (order_data.get("address") or "").strip() or "Pick-up"
 
-    pizza_unit = (size[1] + crust[1] + sauce[1] + cheese[1]
-                  + sum(t["price"] for t in tops)
-                  + sum(e["price"] for e in extras_out))
-    pizza_sub   = pizza_unit * qty
+    pizza_unit   = (size[1] + crust[1] + sauce[1] + cheese[1]
+                    + sum(t["price"] for t in tops)
+                    + sum(e["price"] for e in extras_out))
+    pizza_sub    = pizza_unit * qty
     drinks_total = sum(d["price"] for d in drinks_out)
-    sub  = pizza_sub + drinks_total
-    tax  = sub * TAX_RATE
+    sub          = pizza_sub + drinks_total
+    tax          = sub * TAX_RATE
 
     return {
         "order": {
@@ -496,17 +641,17 @@ def build_receipt(order_data):
         "pricing": {
             "unit":     round(pizza_unit, 2),
             "quantity": qty,
-            "subtotal": round(sub,  2),
-            "tax":      round(tax,  2),
-            "total":    round(sub + tax, 2),
+            "subtotal": round(sub,        2),
+            "tax":      round(tax,        2),
+            "total":    round(sub + tax,  2),
             "breakdown": {
-                "base":     round(size[1],  2),
-                "crust":    round(crust[1], 2),
-                "sauce":    round(sauce[1], 2),
-                "cheese":   round(cheese[1], 2),
-                "toppings": round(sum(t["price"] for t in tops),      2),
-                "drinks":   round(drinks_total, 2),
-                "extras":   round(sum(e["price"] for e in extras_out), 2),
+                "base":     round(size[1],                              2),
+                "crust":    round(crust[1],                             2),
+                "sauce":    round(sauce[1],                             2),
+                "cheese":   round(cheese[1],                            2),
+                "toppings": round(sum(t["price"] for t in tops),        2),
+                "drinks":   round(drinks_total,                         2),
+                "extras":   round(sum(e["price"] for e in extras_out),  2),
             },
         },
         "quote":     random.choice(FANCY_QUOTES),
@@ -515,19 +660,25 @@ def build_receipt(order_data):
     }
 
 
-# ── Natural TTS (Edge TTS primary → HF Inference fallback) ────────────────────
-EDGE_VOICE = "en-US-JennyNeural"          # warm, natural Microsoft Neural voice
-HF_TTS_MODELS = [
-    "espnet/kan-bayashi_ljspeech_vits",
-    "facebook/mms-tts-eng",
-]
+# ── TTS: Edge TTS (primary) → HF Inference (fallback) ─────────────────────────
+EDGE_VOICE    = "en-US-JennyNeural"
+HF_TTS_MODELS = ["espnet/kan-bayashi_ljspeech_vits", "facebook/mms-tts-eng"]
+
+# Simple LRU-style cache keyed by MD5 of cleaned text
+_TTS_CACHE:     dict = {}
+_TTS_CACHE_MAX: int  = 64
 
 
-def _edge_tts_sync(text, voice=EDGE_VOICE):
-    """Run Edge TTS and return MP3 bytes synchronously."""
-    async def _generate():
-        comm = edge_tts.Communicate(text, voice)
-        buf = b""
+def _tts_clean(text: str) -> str:
+    clean = _TTS_CLEAN.sub(" ", text)
+    clean = re.sub(r"\s+", " ", clean).strip()
+    return clean[:500]
+
+
+def _edge_tts_sync(text: str) -> bytes:
+    async def _gen():
+        comm = edge_tts.Communicate(text, EDGE_VOICE)
+        buf  = b""
         async for chunk in comm.stream():
             if chunk["type"] == "audio":
                 buf += chunk["data"]
@@ -535,57 +686,68 @@ def _edge_tts_sync(text, voice=EDGE_VOICE):
 
     loop = asyncio.new_event_loop()
     try:
-        return loop.run_until_complete(_generate())
+        return loop.run_until_complete(_gen())
     finally:
         loop.close()
 
 
 @app.route("/tts", methods=["POST"])
 def tts():
-    """Natural speech: Edge TTS (Microsoft Neural) → HF Inference → 503."""
     data = request.get_json(force=True)
     text = (data.get("text") or "").strip()
     if not text:
         return Response(b"", status=400)
 
-    # Clean text for speech
-    clean = re.sub(r"[#*_~`>]", "", text)
-    clean = re.sub(r"\bhttps?://\S+", "link", clean)
-    clean = re.sub(r"\s+", " ", clean).strip()
-    if len(clean) > 500:
-        clean = clean[:500]
+    clean     = _tts_clean(text)
+    cache_key = hashlib.md5(clean.encode()).hexdigest()
 
-    # 1) Edge TTS — very natural Microsoft Neural voices (free)
+    if cache_key in _TTS_CACHE:
+        print(f"[TTS] cache hit {cache_key[:8]}", flush=True)
+        return Response(
+            _TTS_CACHE[cache_key], mimetype="audio/mpeg",
+            headers={"Cache-Control": "no-cache"},
+        )
+
+    audio: Optional[bytes] = None
+
+    # 1) Edge TTS — high-quality Microsoft Neural voices (free)
     if edge_tts:
         try:
             audio = _edge_tts_sync(clean)
-            if len(audio) > 100:
-                return Response(audio, mimetype="audio/mpeg",
-                                headers={"Cache-Control": "no-cache"})
+            if len(audio) < 100:
+                audio = None
         except Exception as e:
-            print(f"[TTS] Edge failed: {str(e)[:200]}", flush=True)
+            print(f"[TTS] Edge failed: {e}", flush=True)
+            audio = None
 
-    # 2) HF Inference API direct REST as fallback
-    token = (os.environ.get("HF_TOKEN")
-             or os.environ.get("HUGGING_FACE_HUB_TOKEN") or "").strip()
-    if token:
-        for mid in HF_TTS_MODELS:
-            try:
-                r = http_req.post(
-                    f"https://api-inference.huggingface.co/models/{mid}",
-                    headers={"Authorization": f"Bearer {token}"},
-                    json={"inputs": clean,
-                          "options": {"wait_for_model": True}},
-                    timeout=30,
-                )
-                if r.status_code == 200 and len(r.content) > 100:
-                    ct = r.headers.get("content-type", "audio/flac")
-                    return Response(r.content, mimetype=ct,
-                                    headers={"Cache-Control": "no-cache"})
-            except Exception as e:
-                print(f"[TTS] HF {mid}: {str(e)[:200]}", flush=True)
+    # 2) HF Inference REST fallback
+    if not audio:
+        token = (os.environ.get("HF_TOKEN") or
+                 os.environ.get("HUGGING_FACE_HUB_TOKEN") or "").strip()
+        if token:
+            for mid in HF_TTS_MODELS:
+                try:
+                    r = http_req.post(
+                        f"https://api-inference.huggingface.co/models/{mid}",
+                        headers={"Authorization": f"Bearer {token}"},
+                        json={"inputs": clean, "options": {"wait_for_model": True}},
+                        timeout=30,
+                    )
+                    if r.status_code == 200 and len(r.content) > 100:
+                        audio = r.content
+                        break
+                except Exception as e:
+                    print(f"[TTS] HF {mid}: {e}", flush=True)
 
-    return Response(b"", status=503)
+    if not audio:
+        return Response(b"", status=503)
+
+    # Evict oldest entry when cache is full
+    if len(_TTS_CACHE) >= _TTS_CACHE_MAX:
+        del _TTS_CACHE[next(iter(_TTS_CACHE))]
+    _TTS_CACHE[cache_key] = audio
+
+    return Response(audio, mimetype="audio/mpeg", headers={"Cache-Control": "no-cache"})
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
@@ -594,20 +756,78 @@ def index():
     return render_template("index.html")
 
 
+@app.route("/prices")
+def prices():
+    """
+    Serve all price maps to the frontend.
+    The JS fetches this once at page load instead of hard-coding prices,
+    so a catalogue change in catalogue.py automatically propagates to the UI.
+    """
+    return jsonify({
+        "sizes":       {k: v[1] for k, v in SIZES_MAP.items()},
+        "crusts":      {k: v[1] for k, v in CRUSTS_MAP.items()},
+        "sauces":      {k: v[1] for k, v in SAUCES_MAP.items()},
+        "cheeses":     {k: v[1] for k, v in CHEESES_MAP.items()},
+        "toppings":    {k: v[2] for k, v in TOPPINGS_MAP.items()},
+        "drinks":      {k: v[2] for k, v in DRINKS_MAP.items()},
+        "size_labels": {k: v[0] for k, v in SIZES_MAP.items()},
+        "tax_rate":    TAX_RATE,
+    })
+
+
 @app.route("/chat", methods=["POST"])
 def chat():
-    data        = request.get_json(force=True)
-    history     = data.get("history", [])
-    reply       = chat_with_llm(history)
-    reply, order_data = extract_order(reply)
-    reply, update_data = extract_update(reply)
-    # Fallback: infer partial from conversation if LLM didn't include UPDATE
+    ip = (request.headers.get("X-Forwarded-For") or
+          request.remote_addr or "unknown").split(",")[0].strip()
+    if _is_rate_limited(ip):
+        return jsonify({
+            "reply":   "⚠️ Too many requests — please wait a moment!",
+            "partial": None,
+            "receipt": None,
+        }), 429
+
+    data    = request.get_json(force=True)
+    history = data.get("history", [])
+
+    # Infer partial state first so _build_system can inject the right menu sections
     inferred = infer_partial(history)
-    partial  = merge_partial(update_data, inferred)
-    receipt  = build_receipt(order_data) if order_data else None
+    reply    = chat_with_llm(history, partial=inferred)
+
+    reply, order_data  = extract_order(reply)
+    reply, update_data = extract_update(reply)
+
+    partial = merge_partial(update_data, inferred)
+    receipt = build_receipt(order_data) if order_data else None
     return jsonify({"reply": reply, "partial": partial, "receipt": receipt})
 
 
+@app.route("/stats")
+def stats():
+    """Live token-usage and model-hit counters for monitoring."""
+    total = _stats["input_tokens_est"] + _stats["output_tokens_est"]
+    return jsonify({
+        "calls":              _stats["calls"],
+        "input_tokens_est":   _stats["input_tokens_est"],
+        "output_tokens_est":  _stats["output_tokens_est"],
+        "total_tokens_est":   total,
+        "avg_input_per_call": round(_stats["input_tokens_est"] / max(1, _stats["calls"]), 1),
+        "model_hits":         _stats["model_hits"],
+        "tts_cache_entries":  len(_TTS_CACHE),
+        "tts_cache_capacity": _TTS_CACHE_MAX,
+    })
+
+
+# ── Startup ────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    print(f"\n===== Application Startup at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} =====")
+    print(f"\n{'='*60}")
+    print(f"  PizzaVoice  —  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"{'='*60}")
+    print(f"  Catalogue : {len(SIZES_MAP)} sizes | {len(CRUSTS_MAP)} crusts | "
+          f"{len(SAUCES_MAP)} sauces | {len(CHEESES_MAP)} cheeses | "
+          f"{len(TOPPINGS_MAP)} toppings | {len(DRINKS_MAP)} drinks")
+    print(f"  Patterns  : {len(_WB)} pre-compiled word-boundary regexes")
+    print(f"  Menu RAG  : {len(_MENU_SECTIONS)} sections, injected dynamically per turn")
+    print(f"  TTS cache : up to {_TTS_CACHE_MAX} entries")
+    print(f"  Models    : {len(MODELS)} with sequential fallback")
+    print(f"{'='*60}\n")
     app.run(host="0.0.0.0", port=7860, debug=False)
