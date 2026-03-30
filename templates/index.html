@@ -412,7 +412,9 @@ function showReceipt(r){
   $('p-tax').textContent=fmt(p.tax);
   $('p-total').textContent=fmt(p.total);
   $('quote-area').innerHTML=r.quote?`<div class="quote-box">${escHtml(r.quote)}</div>`:'';
-  $('oid-area').innerHTML=`<div class="order-id-text">Order #${r.order_id}</div>`;
+  const areaWarn=r.area_status==='outside'
+    ?`<div style="color:#c0392b;font-size:.85rem;margin-top:.5rem">⚠️ Address may be outside our delivery area. We'll confirm by phone.</div>`:'';
+  $('oid-area').innerHTML=`<div class="order-id-text">Order #${r.order_id}</div>${areaWarn}`;
 }
 function setF(vId,text,pId,pt){const el=$(vId);el.className='row-value filled';el.textContent=text;if(pId&&pt!==undefined)$(pId).textContent=pt;}
 

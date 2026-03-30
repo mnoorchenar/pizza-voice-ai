@@ -171,6 +171,12 @@ def _relevant_sections(partial: Optional[dict], user_msg: str) -> list:
 _BASE_SYSTEM = """\
 You are Pino, a warm and witty Italian pizza waiter at PizzaVoice.
 
+SERVICE AREA — IMPORTANT:
+PizzaVoice delivers exclusively to London, Ontario and communities within 50 km:
+St. Thomas, Strathroy, Ingersoll, Woodstock, Aylmer, Exeter, and nearby areas.
+If a customer gives an address clearly outside this region (e.g. Toronto, Ottawa, USA),
+apologize warmly and let them know we can't deliver there.
+
 YOUR PERSONALITY:
 - Friendly, relaxed, occasionally drops light Italian expressions ("Perfetto!", "Magnifico!", "Bellissimo!")
 - You genuinely enjoy helping people find their perfect pizza
@@ -181,10 +187,11 @@ YOUR PERSONALITY:
 YOUR GOAL:
 Guide the customer through a NATURAL conversation to build their pizza order.
 Collect: customer name, size, crust, sauce, cheese, toppings (or none), drinks (or none),
-         quantity, and DELIVERY ADDRESS.
+         quantity, and STREET ADDRESS.
 Do NOT ask all questions at once. Ask ONE thing at a time, like a real waiter would.
 After pizza details are done, ask if they'd like any drinks.
-Finally, ask for the delivery address before confirming.
+Finally, ask "What's your street address?" before confirming — city defaults to London, ON
+unless the customer says otherwise.
 
 RESPONSE STYLE:
 - Keep every reply SHORT — 1 to 2 sentences max. You're talking, not writing an essay.
@@ -199,14 +206,14 @@ BEHAVIOUR RULES:
 - Handle vague requests gracefully ("make it spicy" → suggest jalapeños + buffalo sauce)
 - If someone wants half-and-half toppings, note it in extras as "Half [A] / Half [B]"
 - Always offer drinks after the pizza is customised — suggest pairings!
-- Always ask for a delivery address before confirming the order
+- Always ask for a street address before confirming the order
 - When ALL info is collected (including address) AND the customer explicitly confirms
   (words like "yes", "perfect", "place it", "go ahead", "that's right", "sounds good"),
   output EXACTLY this block on its own line — no extra text on that line:
   ##ORDER##{"name":"...","size":"...","crust":"...","sauce":"...","cheese":"...","toppings":["..."],"drinks":["..."],"extras":["..."],"quantity":1,"address":"..."}##END##
 - All values inside the JSON must be lowercase and match the menu items as closely as possible
 - The "drinks" array should list each drink ordered (can be empty [])
-- The "address" must be the full delivery address the customer provided
+- The "address" field must be: street address + city (default "London, ON" if not specified)
 - NEVER output ##ORDER## before explicit confirmation
 - After outputting ##ORDER##, say a short warm farewell with a fancy Italian quote
 
@@ -548,6 +555,88 @@ def merge_partial(llm_update: Optional[dict], inferred: Optional[dict]) -> Optio
     return merged
 
 
+# ── Service area — London, Ontario + 50 km ────────────────────────────────────
+# Postal code forward-sort areas that fall within ~50 km of London, ON
+_LONDON_POSTAL_PREFIXES = {
+    # London proper
+    "N5W", "N5X", "N5Y", "N5Z",
+    "N6A", "N6B", "N6C", "N6E", "N6G", "N6H",
+    "N6J", "N6K", "N6L", "N6M", "N6N", "N6P", "N6R",
+    # St. Thomas (~30 km SE)
+    "N5P", "N5R",
+    # Strathroy (~38 km W)
+    "N7G",
+    # Ingersoll (~38 km NE)
+    "N5C",
+    # Woodstock (~45 km NE)
+    "N4S", "N4T", "N4V",
+    # Aylmer (~45 km SE)
+    "N5H",
+    # Exeter (~47 km NW)
+    "N0M",
+}
+
+_SERVICE_AREA_CITIES = {
+    "london", "st thomas", "saint thomas", "strathroy",
+    "ingersoll", "woodstock", "aylmer", "exeter",
+    "dorchester", "belmont", "komoka", "kilworth",
+    "lucan", "ailsa craig", "glencoe",
+}
+
+_OUT_OF_AREA_RE = re.compile(
+    r'\b(toronto|ottawa|mississauga|brampton|hamilton|kitchener|waterloo|windsor'
+    r'|barrie|kingston|sudbury|thunder bay|calgary|vancouver|montreal|edmonton'
+    r'|new york|chicago|detroit|buffalo|ohio|michigan|new york|usa|united states)\b',
+    re.IGNORECASE,
+)
+
+
+_PROVINCE_RE = re.compile(
+    r'\b(ontario|on|bc|ab|qc|ns|nb|mb|sk|pei|nf|nl|canada|usa|united states)\b',
+    re.IGNORECASE,
+)
+
+def _normalize_address(raw: str) -> str:
+    """
+    Ensure address includes a city and province.
+    If the customer gave only a street (e.g. "123 Main St"), append ", London, ON".
+    Leaves the address unchanged if it already mentions any city, province, or country.
+    """
+    if not raw or raw.strip().lower() == "pick-up":
+        return raw
+    low = raw.lower()
+    already_located = (
+        any(c in low for c in _SERVICE_AREA_CITIES)
+        or bool(_PROVINCE_RE.search(low))
+        or bool(_OUT_OF_AREA_RE.search(low))
+    )
+    if already_located:
+        return raw.strip()
+    return f"{raw.strip()}, London, ON"
+
+
+def _service_area_status(address: str) -> str:
+    """
+    Returns "ok", "outside", or "unknown".
+    Used to attach a warning to the order if the address looks out-of-range.
+    """
+    if not address:
+        return "unknown"
+    low = address.lower()
+    if _OUT_OF_AREA_RE.search(low):
+        return "outside"
+    # Postal code check — look for Canadian postal code pattern NXX
+    postal_match = re.search(r'\b([A-Z]\d[A-Z])\s*\d[A-Z]\d\b', address.upper())
+    if postal_match:
+        fsa = postal_match.group(1)  # first three characters
+        if fsa in _LONDON_POSTAL_PREFIXES:
+            return "ok"
+        return "outside"
+    if any(c in low for c in _SERVICE_AREA_CITIES):
+        return "ok"
+    return "unknown"   # can't determine — let the order through
+
+
 # ── Receipt builder ────────────────────────────────────────────────────────────
 def _pick(val: Optional[str], catalogue: dict, sorted_keys: list, default_key: str):
     """Fuzzy-match val against catalogue using pre-sorted keys."""
@@ -615,7 +704,8 @@ def build_receipt(order_data: dict) -> dict:
         if not matched:
             extras_out.append({"label": item.strip().title(), "price": 0.00})
 
-    address = (order_data.get("address") or "").strip() or "Pick-up"
+    address      = _normalize_address((order_data.get("address") or "").strip() or "Pick-up")
+    area_status  = _service_area_status(address)
 
     pizza_unit   = (size[1] + crust[1] + sauce[1] + cheese[1]
                     + sum(t["price"] for t in tops)
@@ -654,9 +744,10 @@ def build_receipt(order_data: dict) -> dict:
                 "extras":   round(sum(e["price"] for e in extras_out),  2),
             },
         },
-        "quote":     random.choice(FANCY_QUOTES),
-        "order_id":  str(uuid.uuid4())[:8].upper(),
-        "timestamp": datetime.now().strftime("%B %d, %Y  •  %I:%M %p"),
+        "quote":        random.choice(FANCY_QUOTES),
+        "order_id":     str(uuid.uuid4())[:8].upper(),
+        "timestamp":    datetime.now().strftime("%B %d, %Y  •  %I:%M %p"),
+        "area_status":  area_status,   # "ok" | "outside" | "unknown"
     }
 
 
