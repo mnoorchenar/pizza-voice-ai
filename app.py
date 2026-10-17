@@ -304,21 +304,22 @@ def _validate_final(data: dict) -> dict:
         return data
 
 
-# ── InferenceClient — module-level singleton ───────────────────────────────────
-_hf_client: Optional[InferenceClient] = None
-_hf_token_cached: str = ""
+# ── HF token — each visitor brings their own ──────────────────────────────────
+# The browser sends the visitor's token in the X-HF-Token header, so a public
+# Space never spends the owner's quota. The server's own HF_TOKEN is only used
+# when USE_SERVER_TOKEN=1 (handy for local testing).
+def _request_token() -> str:
+    token = (request.headers.get("X-HF-Token") or "").strip()
+    if not token and os.environ.get("USE_SERVER_TOKEN") == "1":
+        token = (os.environ.get("HF_TOKEN") or
+                 os.environ.get("HUGGING_FACE_HUB_TOKEN") or "").strip()
+    return token
 
 
-def _get_client() -> Optional[InferenceClient]:
-    global _hf_client, _hf_token_cached
-    token = (os.environ.get("HF_TOKEN") or
-             os.environ.get("HUGGING_FACE_HUB_TOKEN") or "").strip()
+def _get_client(token: str) -> Optional[InferenceClient]:
     if not token:
         return None
-    if _hf_client is None or token != _hf_token_cached:
-        _hf_client = InferenceClient(token=token)
-        _hf_token_cached = token
-    return _hf_client
+    return InferenceClient(token=token)
 
 
 # ── Rate limiter — simple in-memory per-IP tracker ────────────────────────────
@@ -389,10 +390,10 @@ def _build_text_prompt(history: list, system: str) -> str:
     return "\n".join(parts)
 
 
-def chat_with_llm(history: list, partial: Optional[dict] = None) -> str:
-    client = _get_client()
+def chat_with_llm(history: list, token: str, partial: Optional[dict] = None) -> str:
+    client = _get_client(token)
     if not client:
-        return "⚠️ No HuggingFace token found. Add HF_TOKEN in Space Settings → Secrets."
+        return "⚠️ No Hugging Face token. Enter your own token on the start screen."
 
     last_user = next(
         (m["content"] for m in reversed(history) if m["role"] == "user"), ""
@@ -813,8 +814,7 @@ def tts():
 
     # 2) HF Inference REST fallback
     if not audio:
-        token = (os.environ.get("HF_TOKEN") or
-                 os.environ.get("HUGGING_FACE_HUB_TOKEN") or "").strip()
+        token = _request_token()
         if token:
             for mid in HF_TTS_MODELS:
                 try:
@@ -877,12 +877,20 @@ def chat():
             "receipt": None,
         }), 429
 
+    token = _request_token()
+    if not token:
+        return jsonify({
+            "reply":   "⚠️ Please enter your own Hugging Face token on the start screen.",
+            "partial": None,
+            "receipt": None,
+        }), 401
+
     data    = request.get_json(force=True)
     history = data.get("history", [])
 
     # Infer partial state first so _build_system can inject the right menu sections
     inferred = infer_partial(history)
-    reply    = chat_with_llm(history, partial=inferred)
+    reply    = chat_with_llm(history, token, partial=inferred)
 
     reply, order_data  = extract_order(reply)
     reply, update_data = extract_update(reply)

@@ -44,6 +44,15 @@
     }
     #start-btn:hover{background:var(--red-dk);transform:translateY(-2px);box-shadow:0 10px 40px rgba(230,57,70,.55)}
     #start-btn:active{transform:scale(.97)}
+    .token-box{width:100%;max-width:360px;margin:-12px 0 28px;text-align:center}
+    #hf-token{
+      width:100%;padding:12px 18px;border-radius:50px;border:1px solid rgba(255,255,255,.2);
+      background:rgba(255,255,255,.08);color:#fff;font-size:.95rem;font-family:'Inter',sans-serif;outline:none;
+    }
+    #hf-token:focus{border-color:var(--red)}
+    #hf-token.missing{border-color:var(--red);box-shadow:0 0 0 3px rgba(230,57,70,.35)}
+    .token-hint{margin-top:8px;font-size:.75rem;color:rgba(255,255,255,.5)}
+    .token-hint a{color:rgba(255,255,255,.8)}
     .landing-footer{position:absolute;bottom:24px;font-size:.72rem;color:rgba(255,255,255,.3)}
 
     /* ═══════ APP ═══════ */
@@ -206,6 +215,10 @@
     <div class="landing-feat"><span class="icon">📋</span> Live order card</div>
     <div class="landing-feat"><span class="icon">🧾</span> Instant receipt</div>
   </div>
+  <div class="token-box">
+    <input id="hf-token" type="password" placeholder="Your Hugging Face token (hf_…)" autocomplete="off" spellcheck="false"/>
+    <p class="token-hint">Uses your own free token &mdash; stored only in this browser. <a href="https://huggingface.co/settings/tokens" target="_blank" rel="noopener">Get one</a></p>
+  </div>
   <button id="start-btn">🎤&ensp;Start Ordering</button>
   <p class="landing-footer">Powered by HuggingFace &bull; Free &amp; Open Source</p>
 </div>
@@ -306,8 +319,17 @@ function fmt(n){return'$'+n.toFixed(2)}
 function titleCase(s){return s.replace(/\b\w/g,c=>c.toUpperCase())}
 function escHtml(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>')}
 
+/* ━━━ HF TOKEN (visitor's own, kept in this browser only) ━━━ */
+const tokenEl=$('hf-token');
+try{tokenEl.value=localStorage.getItem('hfToken')||''}catch(_){}
+function hfToken(){return tokenEl.value.trim()}
+function apiHeaders(){return{'Content-Type':'application/json','X-HF-Token':hfToken()}}
+
 /* ━━━ LANDING ━━━ */
 startBtn.addEventListener('click',()=>{
+  if(!hfToken()){tokenEl.classList.add('missing');tokenEl.focus();return}
+  tokenEl.classList.remove('missing');
+  try{localStorage.setItem('hfToken',hfToken())}catch(_){}
   landing.classList.add('hidden');
   setTimeout(()=>landing.style.display='none',600);
   appEl.classList.add('visible');
@@ -451,7 +473,7 @@ async function speakNatural(text){
   if(wasMicOn){isRecording=false;try{recognition.stop()}catch(_){}}
   stopSpeaking();setStatus('speaking');
   try{
-    const r=await fetch('/tts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});
+    const r=await fetch('/tts',{method:'POST',headers:apiHeaders(),body:JSON.stringify({text})});
     if(!r.ok)throw new Error(r.status);
     const blob=await r.blob();if(blob.size<100)throw new Error('empty');
     const url=URL.createObjectURL(blob);
@@ -547,7 +569,7 @@ async function send(){
   inputEl.value='';sendBtn.disabled=true;micBtn.disabled=true;
   history.push({role:'user',content:text});
   try{
-    const r=await fetch('/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({history})});
+    const r=await fetch('/chat',{method:'POST',headers:apiHeaders(),body:JSON.stringify({history})});
     const d=await r.json();
     if(d.reply){setPinoMsg(d.reply);history.push({role:'assistant',content:d.reply});if(r.status!==429)speakNatural(d.reply)}
     if(d.partial)updateCard(d.partial);

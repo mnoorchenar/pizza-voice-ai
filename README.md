@@ -76,11 +76,13 @@ Tax rate: 13%
 
 ## Setup
 
-Requires a `HF_TOKEN` secret in Space Settings with access to the serverless Inference API.
+Each visitor enters their own Hugging Face token on the start screen (stored only in their browser), so the Space never uses the owner's quota. The token needs access to the serverless Inference API.
+
+For local testing with your own server-side token:
 
 ```bash
 pip install -r requirements.txt
-HF_TOKEN=hf_... python app.py
+USE_SERVER_TOKEN=1 HF_TOKEN=hf_... python app.py
 ```
 
 To update menu items or prices, edit **`catalogue.py`** only — the backend and frontend both derive their data from it automatically.
